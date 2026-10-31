@@ -1,0 +1,36 @@
+.gitignore
+  h_67fb0402cd9306 1-9
+LICENSE
+  h_67fb0402cd9306 1-21
+README.md
+  h_67fb0402cd9306 1-148
+SKILL.md
+  h_67fb0402cd9306 1-138
+install.sh
+  h_67fb0402cd9306 1-88
+scripts/qoder_signin.py
+  h_67fb0402cd9306 1-1140
+scripts/run_all.py
+  h_67fb0402cd9306 1-195
+scripts/signin.py
+  h_67fb0402cd9306 1-1830
+scripts/trae_checkin.py
+  h_67fb0402cd9306 1-1449
+scripts/trae_get_token.py
+  h_67fb0402cd9306 1-409
+templates/com.user.ai-daily-checkin.plist.template
+  h_67fb0402cd9306 1-42
+uninstall.sh
+  h_67fb0402cd9306 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "96397ea71542fdd3ed40bd6b87a29d98378b98be",
+  "prompts": {},
+  "humans": {
+    "h_67fb0402cd9306": {
+      "author": "ray.tang <ray.tang@htx-inc.com>"
+    }
+  }
+}
