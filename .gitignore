@@ -1,0 +1,9 @@
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+*.bak
+*.tmp
+.trae_token_cache.json
+.trae_checkin_state.json
+.trae_device_ids.json
