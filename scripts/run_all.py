@@ -45,7 +45,7 @@ def checkin_workbuddy():
             [sys.executable, str(script), "auto"],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=60
         )
         for line in res.stdout.splitlines():
             line = line.strip()
@@ -100,7 +100,7 @@ def checkin_trae():
             env=env,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=60
         )
         
         out = res.stdout
