@@ -1,0 +1,14 @@
+scripts/run_all.py
+  h_67fb0402cd9306 48,103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "89439bf85bebabc2f21adfc79e17e5ca9e966a87",
+  "prompts": {},
+  "humans": {
+    "h_67fb0402cd9306": {
+      "author": "ray.tang <ray.tang@htx-inc.com>"
+    }
+  }
+}
