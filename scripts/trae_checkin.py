@@ -275,16 +275,34 @@ def load_cache():
         return {}
 
 
+def _write_private_json(path, data):
+    """以 0600 写入可能含 token 的 JSON，并强制收紧已存在文件的权限。
+
+    cache / state / 账号文件里都有 refreshToken；旧的 open(..., 'w') 会留下
+    0644 的明文文件。这里用 0600 的临时文件原子替换，再显式 chmod 兜底。
+    """
+    d = os.path.dirname(path)
+    if d and not os.path.isdir(d):
+        os.makedirs(d, exist_ok=True)
+    tmp = path + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+
 def save_cache(cache):
     try:
-        path = _cache_path()
-        d = os.path.dirname(path)
-        if d and not os.path.isdir(d):
-            os.makedirs(d, exist_ok=True)
-        tmp = path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as fh:
-            json.dump(cache, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        _write_private_json(_cache_path(), cache)
     except Exception as e:
         print('⚠️  [缓存] 写入失败:', e)
 
@@ -374,8 +392,7 @@ def mark_done(key, info):
     st = load_state()
     st['done'][str(key)] = info
     try:
-        with open(STATE_FILE, 'w', encoding='utf-8') as fh:
-            json.dump(st, fh, ensure_ascii=False, indent=2)
+        _write_private_json(STATE_FILE, st)
     except Exception as e:
         print('⚠️  [状态] 写入失败:', e)
 
@@ -395,8 +412,7 @@ def set_cooldown(key, minutes):
     st = load_state()
     st['cooldown'][str(key)] = time.strftime('%Y-%m-%d %H:%M', time.localtime(time.time() + minutes * 60))
     try:
-        with open(STATE_FILE, 'w', encoding='utf-8') as fh:
-            json.dump(st, fh, ensure_ascii=False, indent=2)
+        _write_private_json(STATE_FILE, st)
     except Exception as e:
         print('⚠️  [冷却] 写入失败: %s' % e)
 
@@ -801,8 +817,7 @@ def persist_tokens(acc):
         node = d['auth'] if 'auth' in d else d
         node['accessToken'] = acc['accessToken']
         node['refreshToken'] = acc.get('refreshToken', '')
-        with open(fp, 'w', encoding='utf-8') as fh:
-            json.dump(d, fh, ensure_ascii=False, indent=2)
+        _write_private_json(fp, d)
         print('💾 [持久化] 已更新 %s' % os.path.basename(fp))
     except Exception as e:
         print('⚠️ [持久化] 写回失败: %s' % e)
@@ -826,8 +841,7 @@ def load_device_ids():
 
 def save_device_ids(ids):
     try:
-        with open(DEVICE_ID_FILE, 'w', encoding='utf-8') as fh:
-            json.dump(ids, fh, ensure_ascii=False, indent=2)
+        _write_private_json(DEVICE_ID_FILE, ids)
     except Exception as e:
         print('⚠️  [设备号] 持久化失败: %s' % e)
 
@@ -1443,6 +1457,27 @@ def main():
     for r in results:
         print('%s [%s] %s：%s' % (r['icon'], r['status'], r['name'], r['detail']))
     push('🤖 Trae SOLO 多账号签到', '\n'.join(out))
+
+    # 供编排层读取的机器可读结果行；原有文本输出保持不变以兼容既有用户。
+    if ok_n:
+        trae_result = 'CLAIMED'
+    elif already_n or not results:
+        trae_result = 'ALREADY'
+    elif soft_n:
+        trae_result = 'WARN'
+    else:
+        trae_result = 'ERROR'
+    credits = next((str(r.get('credits')) for r in results
+                    if r.get('credits') not in (None, '', '-')), '')
+    print('__CHECKIN__ ' + json.dumps({
+        'app': 'Trae',
+        'result': trae_result,
+        'report': '成功 %d / 已签 %d / 待重试 %d / 失败 %d'
+                  % (ok_n, already_n, soft_n, fail_n + dead_n),
+        'credits': credits,
+        'ok': ok_n, 'already': already_n, 'pending': soft_n,
+        'failed': fail_n + dead_n,
+    }, ensure_ascii=False))
 
 
 if __name__ == '__main__':

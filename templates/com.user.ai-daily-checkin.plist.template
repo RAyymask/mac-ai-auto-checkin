@@ -9,8 +9,9 @@
         <string>{{PYTHON_BIN}}</string>
         <string>{{TARGET_DIR}}/run_all.py</string>
     </array>
-    <key>RunAtLoad</key>
-    <true/>
+    <!-- 不使用 RunAtLoad：install.sh 会同步试跑一次，两者叠加会重复发签到请求；
+         开机立即执行也容易撞上网络尚未就绪。每天三次的 StartCalendarInterval
+         配合 launchd 唤醒补偿已足够。 -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>

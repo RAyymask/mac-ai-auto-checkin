@@ -1,39 +1,75 @@
 #!/usr/bin/env bash
 #
-# mac-ai-auto-checkin 一键卸载脚本
+# mac-ai-auto-checkin 卸载脚本（非交互）
 #
 set -euo pipefail
 
 LABEL="com.user.ai-daily-checkin"
 TARGET_DIR="$HOME/.auto-checkin"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
-
-echo "=========================================================="
-echo "🗑️ 卸载 mac-ai-auto-checkin"
-echo "=========================================================="
-
 UID_NUM="$(id -u)"
 
-# 1. 注销 launchd
+usage() {
+  cat <<EOF
+用法：bash uninstall.sh [选项]
+
+  （无参数）   注销定时服务并删除 plist，保留 ~/.auto-checkin 脚本与日志
+  --purge      连同 ~/.auto-checkin 目录一并删除（不可恢复，含历史日志与缓存）
+  -h, --help   显示本帮助
+
+卸载后仍有一项系统级授权需要你手动撤销，见脚本结束时的提示。
+EOF
+}
+
+PURGE=0
+case "${1:-}" in
+  --purge)   PURGE=1 ;;
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) printf '未知参数：%s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+esac
+
+echo "=========================================================="
+echo "🗑️  卸载 mac-ai-auto-checkin"
+echo "=========================================================="
+
 if launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1; then
-    echo "✓ 正在注销 launchd 定时服务..."
-    launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true
-fi
-
-# 2. 删除 plist
-if [[ -f "$PLIST_DST" ]]; then
-    rm -f "$PLIST_DST"
-    echo "✓ 已移除 LaunchAgent 配置文件: $PLIST_DST"
-fi
-
-# 3. 询问是否清理脚本目录
-read -r -p "是否删除 ~/.auto-checkin 目录及日志文件？(y/N): " confirm
-if [[ "$confirm" =~ ^[Yy]$ ]]; then
-    rm -rf "$TARGET_DIR"
-    echo "✓ 已清理目录: $TARGET_DIR"
+  echo "✓ 正在注销 launchd 定时服务..."
+  launchctl bootout "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || true
 else
-    echo "ℹ 已保留 $TARGET_DIR 目录及历史日志。"
+  echo "ℹ 定时服务当前未注册，跳过注销"
 fi
 
-echo "🎉 卸载完成！"
+if [[ -f "$PLIST_DST" ]]; then
+  rm -f "$PLIST_DST"
+  echo "✓ 已移除 $PLIST_DST"
+else
+  echo "ℹ plist 不存在，跳过"
+fi
+
+if [[ "$PURGE" -eq 1 ]]; then
+  if [[ -d "$TARGET_DIR" ]]; then
+    rm -rf "$TARGET_DIR"
+    echo "✓ 已删除 $TARGET_DIR（脚本、日志与凭据缓存）"
+  fi
+else
+  echo "ℹ 保留 $TARGET_DIR（脚本与历史日志）"
+  echo "  如需彻底清理，改用：bash uninstall.sh --purge"
+fi
+
+cat <<'EOF'
+
+⚠️  还需要你手动完成两件事（脚本无权、也不应替你修改系统授权）：
+
+  1. 撤销 Qoder 的钥匙串「始终允许」授权
+     安装时若点过「始终允许」，macOS 会为 python3 永久放行该项，卸载不会自动撤销。
+     打开「钥匙串访问」→ 登录 → 密码类 → 找到「Qoder CN App Safe Storage」
+     → 双击 → 访问控制 → 删除 python3 对应的条目，或改回「每次询问」。
+
+  2. 检查后台项残留
+     「系统设置 → 通用 → 登录项与扩展」里如有本项目的后台项，请手动移除。
+EOF
+
+echo ""
+echo "🎉 卸载完成。"
 echo "=========================================================="

@@ -15,17 +15,28 @@
 
 ---
 
+## ⚠️ 使用前必读
+
+* **本项目调用的是三个客户端的未公开接口**，并非官方签到入口。自动化领取积分、以及 Trae 的设备指纹对齐逻辑，可能违反对应平台的服务条款，存在账号被限制的风险。请自行评估。
+* **默认安装 (`bash install.sh`) 会立即使用你本机已登录的账号，向三个平台发送签到请求**。只想准备文件、不发起任何请求，请用 `--dry-run`（纯预览）或 `--no-run`（部署+注册但不试跑）。
+* 安装过程会**读取本机客户端的登录态**，Qoder 部分还会读取 macOS 钥匙串。首次可能弹出系统授权对话框。
+* 项目**不会自动更新**，也不建议为它开启自动拉取最新代码：三个上游客户端的私有协议随时可能变化，无版本锁定的自动更新会显著放大供应链风险。请固定到带版本号的 tag，并手动升级。
+* 仅供个人学习与自动化探索使用，请遵守各平台服务条款。
+
+---
+
 ## 💡 为什么需要这个项目？
 
-很多开发者每天都会使用 **WorkBuddy**、**Trae**、**Qoder** 等 AI 编程助手。为了维持每天的高速并发请求或获得更多使用额度，我们需要每天打开客户端挨个点击签到、领积分或开盲盒。
+很多开发者每天都会使用 **WorkBuddy**、**Trae**、**Qoder** 等 AI 编程助手。为了维持每天的高速并发请求或获得更多使用额度，需要每天打开客户端挨个点击签到、领积分或开盲盒。
 
-但这些客户端**没有官方网页版签到入口**，传统方式要么必须人肉每天打开点一遍，要么依赖笨重的 UI 屏幕点击脚本（需要亮屏、解锁，且容易点偏）。
+但这些客户端**没有官方网页版签到入口**，传统方式要么人肉每天点一遍，要么依赖笨重的 UI 点击脚本（需要亮屏、解锁，且容易点偏）。
 
 **本项目直接解构客户端的鉴权与签到协议**：
-* ⚡ **纯静默 API 协议流**：毫秒级完成，不需要启动客户端界面，电脑完全不闪烁。
-* 🪶 **零外部依赖**：纯 Python 标准库编写，无需 `pip install` 安装任何第三方包。
-* 🔒 **隐私绝对安全**：仅在本地读取你机器上已登录的 Session，不上传任何凭据，不设内置密钥。
-* ⏰ **唤醒自动补签**：深度结合 macOS 原生 `launchd`，**熄屏锁屏照常跑，即便合盖休眠，只要掀开屏幕唤醒系统，数秒内自动补跑完成，绝不漏签！**
+
+* ⚡ **纯静默 API 协议流**：无需启动客户端界面，电脑不闪烁。
+* 🪶 **零外部依赖**：纯 Python 标准库，无需 `pip install`。
+* 🔒 **凭据只在本地使用**：读取本机已登录 Session，不上传任何凭据，不设内置密钥；落盘的缓存文件以 `0600` 保存。
+* ⏰ **launchd 原生排程**：每天 10:05 / 15:05 / 20:05 静默执行，锁屏照常跑；休眠期间错过的时间点，唤醒后由 launchd 补偿补跑。
 
 ---
 
@@ -33,110 +44,179 @@
 
 | 助手客户端 | 路径与标识 | 自动化功能范围 | 刷新时间 (UTC+8) |
 | :--- | :--- | :--- | :--- |
-| **WorkBuddy**<br>(腾讯生态) | `/Applications/WorkBuddy.app` | • 每日签到（+100 积分，连续签到累计）<br>• 自动开 Buddy 盲盒（+积分/能量）<br>• 自动领取 Buddy 旅行礼物<br>• 自动接取成长中心全量活动任务 | 00:00 |
+| **WorkBuddy**<br>(腾讯生态) | `/Applications/WorkBuddy.app` | • 每日签到（+100 积分，连续签到累计）<br>• 自动开 Buddy 盲盒<br>• 自动领取 Buddy 旅行礼物<br>• 自动接取成长中心全量活动任务 | 00:00 |
 | **Trae CN**<br>(字节跳动) | `/Applications/Trae CN.app` | • 每日签到（+100 积分/额度）<br>• 实时可用额度与消耗回查<br>• 设备指纹自动对齐（抗 9074 限流保护机制） | 00:00 |
-| **Qoder CN** | `/Applications/Qoder CN.app` | • 每日通用 100 Credits 自动 Claim<br>• 本地钥匙串凭证解密与 Campaign 状态回查 | 10:00 |
+| **Qoder CN** | `/Applications/Qoder CN.app`（兼容 `Qoder.app`） | • 每日通用 100 Credits 自动 Claim<br>• 本地钥匙串凭证解密与 Campaign 状态回查 | 10:00 |
 
 ---
 
 ## 📋 环境与前置要求
 
-1. **操作系统**：macOS 11.0 (Big Sur) 或更高版本（兼容 macOS Sequoia 及后续系统，支持 M1/M2/M3/M4 系列芯片及 Intel 架构）。
-2. **Python**：macOS 系统自带的 `/usr/bin/python3` 或 Homebrew Python (3.8+) 即可，**无需安装任何 pip 依赖**。
-3. **客户端状态**：
-   * 对应 App 已安装在 `/Applications/` 目录下；
-   * 电脑上**至少打开并登录过一次**对应的客户端账号（确保本地已生成合法认证会话）。
+1. **操作系统**：macOS 11.0+，Apple Silicon 与 Intel 均可。macOS 13+ 首次注册后台服务时，可能需要在「系统设置 → 通用 → 登录项与扩展」批准。
+2. **Python**：系统自带 `/usr/bin/python3` 或 Homebrew Python，3.8+，**无需 pip 依赖**（已在 macOS 27.2 + Python 3.9.6 实测通过）。
+3. **客户端状态**：对应 App 已装在 `/Applications/`，且**至少打开并登录过一次**（确保本地已生成合法会话）。
+4. **终端会话**：`launchctl` 注册需要在图形登录会话的「终端」里执行；SSH / 某些自动化沙盒会话会失败（见故障排查）。
 
 ---
 
 ## 🚀 快速开始
 
-### 1. 克隆并一键安装
-
-打开 macOS「终端 (Terminal)」，依次执行：
-
 ```bash
-# 1. 克隆仓库
+# 0. 建议先固定在带版本号的 tag，而不是直接跟 main
 git clone https://github.com/RAyymask/mac-ai-auto-checkin.git
 cd mac-ai-auto-checkin
+git checkout <tag>            # 例如 v1.1.0
 
-# 2. 运行一键安装脚本
+# 1. 纯预览：不写文件、不注册、不发请求
+bash install.sh --dry-run
+
+# 2. 确认无误后再安装
 bash install.sh
 ```
 
-`install.sh` 将自动完成以下工作：
-1. 检查 Python 3 环境；
-2. 部署核心脚本至 `~/.auto-checkin/`；
-3. 生成并加载 macOS 系统服务配置 `~/Library/LaunchAgents/com.user.ai-daily-checkin.plist`；
-4. 立即触发一次全自动化自检与试运行。
+`install.sh` 会依次完成：**部署脚本** → **生成并注册 LaunchAgent** → **立即试跑一次**（这一步会发网络请求）。
 
----
+### 安装选项是三态的，不是一句「安装完成」
 
-### 2. Qoder 钥匙串初次授权（只需点一次）
+脚本结束时会分别报告三个状态，**任一失败都不会被静默吞掉**：
 
-由于 macOS 系统钥匙串的安全保护，当外部 Python 进程初次访问 Qoder 桌面端的存储密钥时，macOS 会在屏幕中央弹窗请求授权：
+| 状态 | 含义 | 失败时的影响 |
+| :--- | :--- | :--- |
+| `1/3 文件部署` | `~/.auto-checkin/` 脚本与 `~/Library/LaunchAgents/*.plist` | 后续全部不可用 |
+| `2/3 服务注册` | `launchctl bootstrap` 是否成功 | 文件已就位，但**本次会话不会自动签到** |
+| `3/3 试跑验证` | 三个客户端本轮签到结果 | 不影响定时服务，可手动重跑 |
+
+退出码：`0` 全部成功，`1` 服务注册失败，`2` 试跑有失败项。注册失败时脚本会打印针对性诊断，并继续完成自检与试跑，**不会假装成功**。
+
+> 去掉了 plist 里的 `RunAtLoad`：原先「注册成功瞬间后台跑一次」与「install.sh 同步跑一次」叠加，会在一次安装里发两轮签到请求。现在只在安装时同步试跑一次，之后完全交给每天三个时间点。
+
+### 其他选项
 
 ```bash
-# 在终端中运行一次以触发授权弹窗
-python3 ~/.auto-checkin/qoder_signin.py auto
+bash install.sh --no-run    # 部署 + 注册，但不立即试跑
+bash install.sh --check     # 离线自检（doctor），不联网、不读取凭据内容
+bash install.sh --help
 ```
-
-* **屏幕弹出系统弹窗**（*“security 想要访问钥匙串中的 Qoder CN App Safe Storage”*）；
-* 请输入你的 **Mac 开机密码**，并**务必点击「始终允许」(Always Allow)**；
-* 点击后即刻完成领取，今后后台静默运行将**永久自动放行，不再弹窗**。
 
 ---
 
 ## 🛠️ 常用管理指令
 
-* **手动立即执行一次全量签到**：
-  ```bash
-  ~/.auto-checkin/checkin
-  ```
-* **查看每日签到结果与明细日志**：
-  ```bash
-  tail -n 25 ~/.auto-checkin/checkin.log
-  ```
-* **实时追踪日志流**：
-  ```bash
-  tail -f ~/.auto-checkin/checkin.log
-  ```
-* **一键卸载（清理 launchd 服务及相关文件）**：
-  ```bash
-  bash uninstall.sh
-  ```
+| 操作 | 命令 |
+| :--- | :--- |
+| 手动立即签到 | `~/.auto-checkin/checkin` |
+| **离线自检（推荐排障第一步）** | `~/.auto-checkin/checkin doctor` |
+| 自检结果转 JSON（供脚本消费） | `~/.auto-checkin/checkin doctor --json` |
+| 签到结果转 JSON（不弹通知） | `~/.auto-checkin/checkin --json` |
+| 查看日志 | `tail -n 25 ~/.auto-checkin/checkin.log` |
+| 查看 launchd 输出 | `tail -f ~/.auto-checkin/launchd.out.log` |
+| 查看服务状态 | `launchctl print gui/$(id -u)/com.user.ai-daily-checkin` |
+| 卸载（保留脚本与日志） | `bash uninstall.sh` |
+| 彻底卸载（删除目录，不可恢复） | `bash uninstall.sh --purge` |
+
+`doctor` 会检查 Python 版本、三个客户端是否安装、脚本完整性与语法、目录/凭据文件权限、plist 内容与定时服务注册状态、日志体积，并给出修复命令。它**不联网**，也**不会打印任何 token 内容**。
+
+---
+
+## 🔐 Qoder 钥匙串授权（以及卸载后的撤销）
+
+首次读取 Qoder 桌面端的加密钥匙时，macOS 可能弹窗要求授权：
+
+```bash
+python3 ~/.auto-checkin/qoder_signin.py auto
+```
+
+输入 Mac 开机密码并点击**「始终允许」(Always Allow)** 后，后台静默运行不再弹窗。
+
+> **重要**：「始终允许」是 macOS 记在钥匙串条目上的系统级 ACL，**卸载脚本不会、也无法自动撤销**。卸载后请打开「钥匙串访问」→ 登录 → 密码类 →「Qoder CN App Safe Storage」→ 双击 →「访问控制」，删除 `python3` 对应条目，或改回「每次询问」。`uninstall.sh` 会再次提示这一点。
+
+---
+
+## 🩺 故障排查
+
+<details>
+<summary><code>Bootstrap failed: 5: Input/output error</code></summary>
+
+`launchctl` 拒绝注册时，脚本会保留完整错误到 `~/.auto-checkin/bootstrap.err`。按顺序检查：
+
+1. **是否图形登录会话**：`launchctl managername` 应为 `Aqua`。SSH、后台任务、某些 IDE/自动化沙盒会话会返回 EIO；请在 macOS 自带的「终端」App 里重跑：
+   ```bash
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.ai-daily-checkin.plist
+   ```
+2. **是否已有同名服务**：`launchctl bootout gui/$(id -u)/com.user.ai-daily-checkin` 后重试 `bash install.sh`。
+3. **macOS 13+ 后台项批准**：检查「系统设置 → 通用 → 登录项与扩展」中是否有待批准项。
+4. **文件其实已经就位**：plist 位于 `~/Library/LaunchAgents` 且未被禁用时，**重新登录 macOS 后 launchd 通常会自动加载它**。手动注册只是让本次会话立刻生效。
+5. 用 `bash install.sh --check` 确认到底是「文件没部署」还是「服务没注册」。
+
+</details>
+
+<details>
+<summary>签到返回 <code>NO_AUTH</code> / 客户端未检测到</summary>
+
+* 确认对应 App 已安装在 `/Applications` 且**至少登录过一次**；
+* WorkBuddy / Trae 的登录态过期时，重新打开客户端登录一次；
+* Qoder 走钥匙串授权，见上一节；
+* 单独跑子脚本看详细输出：`python3 ~/.auto-checkin/signin.py auto`、`python3 ~/.auto-checkin/qoder_signin.py auto`。
+
+</details>
+
+<details>
+<summary>Homebrew 版 Python 找不到</summary>
+
+`install.sh` 依次探测 `/opt/homebrew/bin/python3`、`/usr/local/bin/python3`、`/usr/bin/python3`，系统自带 Python 完全够用。非登录 shell 未加载 `~/.zprofile` 导致 `brew` 不在 PATH 时不影响安装。
+
+</details>
 
 ---
 
 ## 💤 熄屏、锁屏与合盖唤醒机制
 
-很多人担心：“我的 MacBook 经常合盖装在包里，会不会错过签到？”
-
-* **锁屏 / 仅屏幕熄灭**：Mac 并没有真正休眠，网络连接正常，脚本在设定的时间点（10:05 / 15:05 / 20:05）会在后台毫秒级静默完成签到。
-* **合盖 / 深度休眠**：休眠期间 CPU 暂停以省电。但借助 macOS `launchd` 的排程补偿机制（Catch-Up），**只要你在一天中的任意时刻掀开屏幕，系统检测到错过定时后，会在连上 Wi-Fi 的数秒内自动补跑！**
-* **严格幂等防风控**：脚本内置服务端回查，如果今日已经签过到，0.2 秒内直接跳过，不会重复请求，也不会触发官方风控机制。
+* **锁屏 / 仅屏幕熄灭**：网络正常，脚本在 10:05 / 15:05 / 20:05 静默完成签到。
+* **合盖 / 深度休眠**：休眠期间 CPU 暂停。借助 `launchd` 对 `StartCalendarInterval` 的排程补偿，唤醒后错过的时间点会被补跑。
+* **幂等**：已签到会由服务端回查直接跳过，不会重复领取，也不会因多次排程触发风控。
 
 ---
 
-## 🔔 桌面原生通知
+## 🔔 通知与日志
 
-每次签到完成后，脚本会通过 macOS 通知中心弹出汇总通知：
+每次签到完成后通过 macOS 通知中心推送汇总（消息用分号分隔，AppleScript 不解析 `\n`）：
 
 ```text
-┌──────────────────────────────────────────────┐
-│ 每日签到助手                          刚刚   │
-│ AI 助手积分领取完毕                          │
-│ ✅ WorkBuddy: 今日已签 (+100积分)，连签 4 天  │
-│ ✅ Trae: 今日已完成 (+100积分)，当前额度 4600 │
-│ ✅ Qoder: 成功领取 100 Credits                │
-└──────────────────────────────────────────────┘
+每日签到助手 · AI 助手积分领取完毕
+✅ WorkBuddy: 今日已签 (+100积分)，连签 4 天; ✅ Trae: 今日已完成; ✅ Qoder: 已领今日 100 Credits
 ```
+
+`checkin.log` 超过 1 MB 会自动轮转成 `checkin.log.1`。`launchd.out.log` / `launchd.err.log` 由 launchd 直接写入，无法在脚本内安全轮转，`doctor` 会在它们超过 1 MB 时提示手动清理。
+
+---
+
+## 🔒 安全与隐私说明
+
+* 部署目录 `~/.auto-checkin` 权限 `0700`；脚本、`checkin` 命令与 plist 均仅当前用户可读写。
+* `.trae_token_cache.json`、`trae-*.json`、state / device-id 文件里的 `refreshToken` 属于明文凭据，统一通过 `0600` 原子写入；安装时会把历史遗留的宽松权限一并收紧。
+* 子脚本输出经过脱敏（`[REDACTED]`）；`doctor` 只报告文件权限，**不读取也不打印凭据内容**。
+* 结果解析由 `checkin_protocol.py` 统一归一化，子脚本保留原有输出格式以兼容上游项目；Trae 额外输出一行 `__CHECKIN__ {json}` 机器可读结果。
+* 请求仅指向官方域名：`copilot.tencent.com`、`api.trae.cn`、`api.trae.com.cn`、`openapi.qoder.com.cn`。企业微信 / PushPlus 推送 token 从环境变量读取，默认关闭，无硬编码回传地址。
+
+---
+
+## 📌 版本与校验（维护者建议）
+
+发布时请打 tag 并附 SHA-256，用户安装前可校验，避免直接跟随 `main`：
+
+```bash
+git checkout v1.1.0
+shasum -a 256 install.sh scripts/*.py
+```
+
+本项目**不提供也不建议启用自动更新**：读的是私有协议，客户端更新随时可能导致脚本失效；固定版本 + 人工升级更安全。
 
 ---
 
 ## 🤝 致谢与开源参考
 
 感谢开源社区先驱的逆向分析与脚本实践，本项目在开发过程中借鉴了以下优秀的开源成果：
+
 * [88lin / workbuddy-auto-signin](https://github.com/88lin/workbuddy-auto-signin)
 * [L0NE-6 / Trae-AutoCheckin](https://github.com/L0NE-6/Trae-AutoCheckin)
 * [L0NE-6 / WorkBuddy-Daily](https://github.com/L0NE-6/WorkBuddy-Daily)
