@@ -132,19 +132,25 @@ sys.exit(0 if all(old.get(k) == new.get(k) for k in keys) else 1)
 PY
 }
 
+BOOTSTRAP_ERR="$TARGET_DIR/bootstrap.err"
+SERVICE_LOST=0
+SERVICE_LOADED=0
+CONFIG_SAME=0
+launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 && SERVICE_LOADED=1
+# 比对必须在替换 PLIST_DST 之前完成，否则读到的是刚写好的新文件
+if [[ "$SERVICE_LOADED" -eq 1 ]] && config_matches; then CONFIG_SAME=1; fi
+
 mv -f "$PLIST_TMP" "$PLIST_DST"
 chmod 644 "$PLIST_DST"
 
-BOOTSTRAP_ERR="$TARGET_DIR/bootstrap.err"
-SERVICE_LOST=0
-if launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 && config_matches; then
+if [[ "$SERVICE_LOADED" -eq 1 && "$CONFIG_SAME" -eq 1 ]]; then
   # 服务已注册且调度一致：不要为了一份等价的 plist 注销掉健康的后台服务。
   # 在受限会话里可能 bootout 成功、bootstrap 却被拒，那样服务就彻底丢了。
   SERVICE_OK=1
   echo "  · 服务已注册且排程一致，保留现有注册；磁盘配置已更新，重新登录后完全同步"
   rm -f "$BOOTSTRAP_ERR"
 else
-  if launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1; then
+  if [[ "$SERVICE_LOADED" -eq 1 ]]; then
     echo "  · 调度配置有变化，重新注册服务…"
     launchctl bootout "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || true
     SERVICE_LOST=1
