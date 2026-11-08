@@ -12,6 +12,7 @@
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,9 +27,12 @@ CLIENTS = (
     ("WorkBuddy", ("WorkBuddy.app",)),
     ("Trae CN", ("Trae CN.app",)),
     ("Qoder CN", ("Qoder CN.app", "Qoder.app")),
+    ("MiniMax Code", ("MiniMax Code.app",)),
+    ("豆包", ("Doubao.app",)),
 )
 SCRIPTS = ("checkin_protocol.py", "run_all.py", "signin.py", "trae_get_token.py",
-           "trae_checkin.py", "qoder_signin.py", "doctor.py")
+           "trae_checkin.py", "qoder_signin.py", "minimax_checkin.py",
+           "doubao_checkin.py", "doctor.py")
 
 
 def rec(name, ok, detail, fix=""):
@@ -90,6 +94,26 @@ def collect():
         ok = (mode & 0o077) == 0
         items.append(rec("凭据缓存权限", ok, ".trae_token_cache.json 为 %o（内容不读取）" % mode,
                          "chmod 600 %s" % cache if not ok else ""))
+
+    # 新增两个平台的凭据链路静态检查：只看文件是否存在 / 工具是否可用，
+    # 不读取任何 token、cookie 内容，也不联网、不触发钥匙串授权弹窗。
+    openssl_path = shutil.which("openssl") or "/usr/bin/openssl"
+    has_openssl = Path(openssl_path).is_file()
+    items.append(rec("openssl（豆包解密）", has_openssl,
+                     openssl_path if has_openssl else "未找到 openssl",
+                     "" if has_openssl else "安装 Xcode Command Line Tools"))
+
+    doubao_db = HOME / "Library" / "Application Support" / "Doubao" / "Default" / "Cookies"
+    items.append(rec("豆包登录态文件", doubao_db.is_file(),
+                     str(doubao_db) if doubao_db.is_file() else "未找到客户端 Cookie 库",
+                     "" if doubao_db.is_file() else "安装并登录一次豆包电脑版"))
+
+    mm_root = HOME / ".minimax" / "auth" / "prod"
+    mm_files = list(mm_root.glob("*/mcode-public/auth.json")) if mm_root.is_dir() else []
+    items.append(rec("MiniMax 登录态文件", bool(mm_files),
+                     "已找到 %d 份认证文件（内容不读取）" % len(mm_files) if mm_files
+                     else "未找到 ~/.minimax/auth/prod/*/mcode-public/auth.json",
+                     "" if mm_files else "在 MiniMax Code 客户端登录一次"))
 
     if not PLIST.exists():
         items.append(rec("LaunchAgent 配置", False, "%s 不存在" % PLIST,

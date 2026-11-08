@@ -121,6 +121,8 @@ def _message(app, status, res, report, obj):
         head = "签到成功" if status == STATUS_OK else "今日已完成"
         balance = obj.get("credits") or ""
         return "%s (+100积分)%s" % (head, ("，当前额度 %s" % balance) if balance else "")
+    if app in ("MiniMax", "Doubao") and status in (STATUS_OK, STATUS_ALREADY):
+        return report or ("签到成功" if status == STATUS_OK else "今日已签")
     return report or res or "无有效返回"
 
 

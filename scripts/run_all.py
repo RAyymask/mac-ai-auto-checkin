@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AI 助手每日一键自动签到编排层（WorkBuddy / Trae / Qoder）。
+"""AI 助手每日一键自动签到编排层（WorkBuddy / Trae / Qoder / MiniMax Code / 豆包）。
 
 只负责调度、汇总与日志；凭据读取和 API 调用都在各子脚本内完成。
 
@@ -155,6 +155,54 @@ def checkin_qoder():
     return r
 
 
+def checkin_minimax():
+    log("▶ [MiniMax Code] 开始执行签到...")
+    r = _run("MiniMax", "minimax_checkin.py", timeout=30)
+    _report("MiniMax Code", r)
+    return r
+
+
+DOUBAO_GUARD = BASE_DIR / ".doubao_done"
+
+
+def _doubao_done_today():
+    """豆包每天最多跑一次裸 HTTP 链路。
+
+    LaunchAgent 一天触发三次；裸请求缺 a_bogus 签名，重复打接口有会话被
+    降权的风险（见 doubao_checkin.py 顶部说明）。当天已经成功/已签后直接收手，
+    连只读查询都不再发。DOUBAO_FORCE=1 可强制重跑。
+    """
+    if os.environ.get("DOUBAO_FORCE") == "1":
+        return False
+    try:
+        return DOUBAO_GUARD.read_text(encoding="utf-8").strip() == datetime.now().strftime("%Y-%m-%d")
+    except Exception:
+        return False
+
+
+def _mark_doubao_done():
+    try:
+        fd = os.open(str(DOUBAO_GUARD), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(datetime.now().strftime("%Y-%m-%d"))
+    except Exception:
+        pass
+
+
+def checkin_doubao():
+    log("▶ [豆包] 开始执行签到...")
+    if _doubao_done_today():
+        r = {"app": "Doubao", "status": proto.STATUS_ALREADY, "result": "ALREADY",
+             "msg": "今日已处理，跳过（避免重复裸请求）；如需重跑设 DOUBAO_FORCE=1"}
+        _report("豆包", r)
+        return r
+    r = _run("Doubao", "doubao_checkin.py", timeout=40)
+    if r["status"] in (proto.STATUS_OK, proto.STATUS_ALREADY):
+        _mark_doubao_done()
+    _report("豆包", r)
+    return r
+
+
 def main():
     global QUIET
     as_json = "--json" in sys.argv[1:]
@@ -162,7 +210,8 @@ def main():
 
     log("=" * 55)
     log("🚀 启动 AI 办公助手每日自动签到")
-    results = [checkin_workbuddy(), checkin_trae(), checkin_qoder()]
+    results = [checkin_workbuddy(), checkin_trae(), checkin_qoder(),
+               checkin_minimax(), checkin_doubao()]
     log("-" * 55)
     summary = []
     for r in results:

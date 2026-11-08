@@ -2,7 +2,8 @@
 
 <p align="center">
   <strong>专为 macOS 打造的 AI 办公与编程助手每日自动一键签到 & 积分领取套件</strong><br>
-  涵盖 <strong>WorkBuddy</strong> (腾讯) · <strong>Trae CN</strong> (字节跳动) · <strong>Qoder CN</strong>
+  涵盖 <strong>WorkBuddy</strong> (腾讯) · <strong>Trae CN</strong> (字节跳动) · <strong>Qoder CN</strong><br>
+  <strong>MiniMax Code</strong> (MiniMax) · <strong>豆包</strong> (字节跳动)
 </p>
 
 <p align="center">
@@ -17,17 +18,18 @@
 
 ## ⚠️ 使用前必读
 
-* **本项目调用的是三个客户端的未公开接口**，并非官方签到入口。自动化领取积分、以及 Trae 的设备指纹对齐逻辑，可能违反对应平台的服务条款，存在账号被限制的风险。请自行评估。
-* **默认安装 (`bash install.sh`) 会立即使用你本机已登录的账号，向三个平台发送签到请求**。只想准备文件、不发起任何请求，请用 `--dry-run`（纯预览）或 `--no-run`（部署+注册但不试跑）。
-* 安装过程会**读取本机客户端的登录态**，Qoder 部分还会读取 macOS 钥匙串。首次可能弹出系统授权对话框。
-* 项目**不会自动更新**，也不建议为它开启自动拉取最新代码：三个上游客户端的私有协议随时可能变化，无版本锁定的自动更新会显著放大供应链风险。请固定到带版本号的 tag，并手动升级。
+* **本项目调用的是各客户端的未公开接口**，并非官方签到入口。自动化领取积分、以及 Trae 的设备指纹对齐逻辑，可能违反对应平台的服务条款，存在账号被限制的风险。请自行评估。
+* **默认安装 (`bash install.sh`) 会立即使用你本机已登录的账号，向五个平台发送签到请求**。只想准备文件、不发起任何请求，请用 `--dry-run`（纯预览）或 `--no-run`（部署+注册但不试跑）。
+* 安装过程会**读取本机客户端的登录态**，Qoder 与豆包部分还会读取 macOS 钥匙串。首次可能弹出系统授权对话框，请在「终端」里手动跑一次并选「始终允许」。
+* **豆包走的是未签名裸 HTTP 接口**：上游实测连续请求可能让整个会话被降权，连客户端手工签到都会失效。项目已加「每天最多一次 + 写请求绝不重试」的约束，详见下方「MiniMax Code 与豆包」；遇到 `710010702` 请改用客户端手工签到，不要反复重跑。
+* 项目**不会自动更新**，也不建议为它开启自动拉取最新代码：各上游客户端的私有协议随时可能变化，无版本锁定的自动更新会显著放大供应链风险。请固定到带版本号的 tag，并手动升级。
 * 仅供个人学习与自动化探索使用，请遵守各平台服务条款。
 
 ---
 
 ## 💡 为什么需要这个项目？
 
-很多开发者每天都会使用 **WorkBuddy**、**Trae**、**Qoder** 等 AI 编程助手。为了维持每天的高速并发请求或获得更多使用额度，需要每天打开客户端挨个点击签到、领积分或开盲盒。
+很多开发者每天都会使用 **WorkBuddy**、**Trae**、**Qoder**、**MiniMax Code**、**豆包** 等 AI 工具。为了维持每天的高速并发请求或获得更多使用额度，需要每天打开客户端挨个点击签到、领积分或开盲盒。
 
 但这些客户端**没有官方网页版签到入口**，传统方式要么人肉每天点一遍，要么依赖笨重的 UI 点击脚本（需要亮屏、解锁，且容易点偏）。
 
@@ -84,7 +86,7 @@ bash install.sh
 | :--- | :--- | :--- |
 | `1/3 文件部署` | `~/.auto-checkin/` 脚本与 `~/Library/LaunchAgents/*.plist` | 后续全部不可用 |
 | `2/3 服务注册` | `launchctl bootstrap` 是否成功 | 文件已就位，但**本次会话不会自动签到** |
-| `3/3 试跑验证` | 三个客户端本轮签到结果 | 不影响定时服务，可手动重跑 |
+| `3/3 试跑验证` | 五个客户端本轮签到结果 | 不影响定时服务，可手动重跑 |
 
 退出码：`0` 全部成功，`1` 服务注册失败，`2` 试跑有失败项。注册失败时脚本会打印针对性诊断，并继续完成自检与试跑，**不会假装成功**。
 
@@ -97,6 +99,42 @@ bash install.sh --no-run    # 部署 + 注册，但不立即试跑
 bash install.sh --check     # 离线自检（doctor），不联网、不读取凭据内容
 bash install.sh --help
 ```
+
+## 🆕 MiniMax Code 与豆包
+
+两者都复用本机客户端登录态，**仍然零第三方依赖、纯 Python 标准库**（豆包的 AES 解密调用 macOS 自带的 `/usr/bin/openssl`）。
+
+| 平台 | 凭据来源 | 签到接口 | 幂等判定 |
+| :--- | :--- | :--- | :--- |
+| MiniMax Code | `~/.minimax/auth/prod/<region>/mcode-public/auth.json` 的 `accessToken`；`realUserID` 取自 `~/Library/Application Support/MiniMax/minimax-agent-cn-config.json` | `GET /minimax-cloud/api/v1/signin/status` + `POST .../claim`（官方 TUI 同款 md5 签名头） | 7 日面板 `is_today && status==3` |
+| 豆包 | `~/Library/Application Support/Doubao/Default/Cookies`；钥匙串 `Doubao Browser Safe Storage` 派生密钥 | `POST /alice/ug/campaign/v3/detail/`（只读）+ `/alice/ug/campaign/landing/checkin/` | 活动详情 `daily_checkin.checked_in_today` |
+
+### ⚠️ 豆包裸接口的风控风险
+
+豆包活动页前端 SDK 会带 `a_bogus` / `msToken` / `web_id` 等签名与设备指纹，本项目的纯 HTTP 请求没有这一层。上游 `auto-signin-kit` 在 2026-11-07 实测：**连续发裸请求会让该会话被置为受限，之后连在客户端手工点签到都会失败，需重装客户端才恢复**。因此做了三道约束：
+
+1. 领取前先查只读的 `v3/detail`，只有确认「今天还没签」才发写请求；只读查询失败就收手。
+2. 领取请求每次运行**恰好一次，绝不重试、不补发、事后不复查**（接口本身幂等）。
+3. `run_all.py` 有「当天已处理就跳过」守卫（标记 `~/.auto-checkin/.doubao_done`，0600），LaunchAgent 一天三次触发也只打一轮；需要重跑设 `DOUBAO_FORCE=1`。
+
+返回 `710010702 系统错误` 时请**改用豆包客户端手工签到，不要反复重跑**。排查一律先用 `--dry-run`：
+
+```bash
+python3 ~/.auto-checkin/minimax_checkin.py --dry-run   # 只查状态，不领取
+python3 ~/.auto-checkin/doubao_checkin.py --dry-run    # 只查活动详情，不领取
+```
+
+手动覆盖凭据（客户端未登录或凭据读不到时）：
+
+```bash
+MINIMAX_ACCESS_TOKEN=... MINIMAX_USER_ID=... python3 ~/.auto-checkin/minimax_checkin.py
+DOUBAO_COOKIE='sessionid=...; sid_tt=...; uid_tt=...' python3 ~/.auto-checkin/doubao_checkin.py
+DOUBAO_CAMPAIGN_CODE=pc_incentive_task_mvp_v3 python3 ~/.auto-checkin/doubao_checkin.py --dry-run
+```
+
+豆包活动换季（返回 `campaign not found`）时更新 `DOUBAO_CAMPAIGN_CODE` 即可。首次读取豆包钥匙串可能弹系统授权框，请在「终端」里手动跑一次 `--dry-run` 并选「始终允许」，之后后台任务才读得到。
+
+> 协议参考：`MiniMax-AI/minimax-code`（官方 TUI 的 `http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`）、`hiclaw168-163/auto-signin-kit` 的 NOTE-04、`tututashu/doubao-auto-checkin`（MIT，macOS Cookie 解密）、`welldo/QinglongMy`。本项目未复制这些仓库的代码，仅实现其公开的协议契约。
 
 ---
 
@@ -114,7 +152,7 @@ bash install.sh --help
 | 卸载（保留脚本与日志） | `bash uninstall.sh` |
 | 彻底卸载（删除目录，不可恢复） | `bash uninstall.sh --purge` |
 
-`doctor` 会检查 Python 版本、三个客户端是否安装、脚本完整性与语法、目录/凭据文件权限、plist 内容与定时服务注册状态、日志体积，并给出修复命令。它**不联网**，也**不会打印任何 token 内容**。
+`doctor` 会检查 Python 版本、五个客户端是否安装、脚本完整性与语法、目录/凭据文件权限、`openssl` 与两个新平台的凭据文件是否就位、plist 内容与定时服务注册状态、日志体积，并给出修复命令。它**不联网**，也**不会打印任何 token 内容**。
 
 ---
 
@@ -187,7 +225,7 @@ python3 ~/.auto-checkin/qoder_signin.py auto
 
 ```text
 每日签到助手 · AI 助手积分领取完毕
-✅ WorkBuddy: 今日已签 (+100积分)，连签 4 天; ✅ Trae: 今日已完成; ✅ Qoder: 已领今日 100 Credits
+✅ WorkBuddy: 今日已签 (+100积分)，连签 4 天; ✅ Trae: 今日已完成; ✅ Qoder: 已领今日 100 Credits; ✅ MiniMax Code: 签到成功 +100 积分; ✅ 豆包: 签到成功 +200 额度
 ```
 
 `checkin.log` 超过 1 MB 会自动轮转成 `checkin.log.1`。`launchd.out.log` / `launchd.err.log` 由 launchd 直接写入，无法在脚本内安全轮转，`doctor` 会在它们超过 1 MB 时提示手动清理。

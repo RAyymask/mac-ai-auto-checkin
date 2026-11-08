@@ -1,6 +1,6 @@
 ---
 name: mac-ai-auto-checkin
-description: macOS 专用的 AI 办公与编程助手每日自动签到与积分领取 Skill。支持 WorkBuddy（每日签到+成长中心全任务）、Trae CN（每日签到+额度查询+防9074限流）、Qoder CN（每日 100 Credits）。基于底层 API 协议流与本地桌面凭据自动提取，零外部依赖，通过 macOS launchd 实现免开软件界面、锁屏/合盖唤醒即补跑的全自动静默签到。
+description: macOS 专用的 AI 办公与编程助手每日自动签到与积分领取 Skill。支持 WorkBuddy（每日签到+成长中心全任务）、Trae CN（每日签到+额度查询+防9074限流）、Qoder CN（每日 100 Credits）、MiniMax Code（7 日签到面板）、豆包（签到领额度）。基于底层 API 协议流与本地桌面凭据自动提取，零外部依赖，通过 macOS launchd 实现免开软件界面、锁屏/合盖唤醒即补跑的全自动静默签到。
 ---
 
 # 🍎 macOS AI 助手每日自动签到 Skill (`mac-ai-auto-checkin`)
@@ -98,7 +98,7 @@ macOS 系统对钥匙串（Keychain Access）有严格的应用沙盒保护机�
 ## 七、 快速安装与部署
 
 ### 1. 一键安装
-**默认安装会立即用你已登录的账号向三个平台发送签到请求**。建议先预览：
+**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险，详见 README「MiniMax Code 与豆包」章节）。建议先预览：
 ```bash
 git clone https://github.com/RAyymask/mac-ai-auto-checkin.git
 cd mac-ai-auto-checkin

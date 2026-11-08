@@ -22,8 +22,9 @@ usage() {
   --check      运行离线自检（doctor），不联网、不读取凭据内容
   -h, --help   显示本帮助
 
-注意：默认安装会立即使用你本机已登录的账号，向 WorkBuddy / Trae / Qoder
-      的服务器发送签到请求。只想准备文件请用 --dry-run 或 --no-run。
+注意：默认安装会立即使用你本机已登录的账号，向 WorkBuddy / Trae / Qoder /
+      MiniMax Code / 豆包 的服务器发送签到请求（豆包走未签名接口，详见 README
+      的风控说明）。只想准备文件请用 --dry-run 或 --no-run。
 EOF
 }
 
@@ -65,7 +66,7 @@ if [[ "$MODE" == "dry" ]]; then
   echo "将部署：$REPO_DIR/scripts/*.py -> $TARGET_DIR （目录 700，文件 600）"
   echo "将生成：$PLIST_DST"
   echo "将注册：launchctl bootstrap gui/$UID_NUM $PLIST_DST"
-  echo "将试跑：$PYTHON_BIN $TARGET_DIR/run_all.py （会向三个平台发送签到请求）"
+  echo "将试跑：$PYTHON_BIN $TARGET_DIR/run_all.py （会向五个平台发送签到请求）"
   echo "-------- 生成的 plist 预览 --------"
   sed -e "s|{{PYTHON_BIN}}|$PYTHON_BIN|g" -e "s|{{TARGET_DIR}}|$TARGET_DIR|g" "$TEMPLATE"
   echo "-------------------------------------------------------------"
