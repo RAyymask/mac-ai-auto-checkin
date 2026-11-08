@@ -143,7 +143,11 @@ python3 ~/.auto-checkin/qoder_signin.py auto
    ```bash
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.ai-daily-checkin.plist
    ```
-2. **是否已有同名服务**：`launchctl bootout gui/$(id -u)/com.user.ai-daily-checkin` 后重试 `bash install.sh`。
+2. **是否已有同名服务**：先用 `launchctl print gui/$(id -u)/com.user.ai-daily-checkin` 查看已注册内容。**不要一上来就 bootout**：`install.sh` 会自动比对已注册 plist 与模板，配置一致且服务正常时保留注册、不会重复 bootstrap；只有确认注册内容确已损坏、需要强制重建时才手动清理后重跑：
+   ```bash
+   launchctl bootout gui/$(id -u)/com.user.ai-daily-checkin
+   bash install.sh
+   ```
 3. **macOS 13+ 后台项批准**：检查「系统设置 → 通用 → 登录项与扩展」中是否有待批准项。
 4. **文件其实已经就位**：plist 位于 `~/Library/LaunchAgents` 且未被禁用时，**重新登录 macOS 后 launchd 通常会自动加载它**。手动注册只是让本次会话立刻生效。
 5. 用 `bash install.sh --check` 确认到底是「文件没部署」还是「服务没注册」。
