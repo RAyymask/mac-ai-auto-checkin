@@ -2,8 +2,9 @@
 
 <p align="center">
   <strong>专为 macOS 打造的 AI 办公与编程助手每日自动一键签到 & 积分领取套件</strong><br>
-  涵盖 <strong>WorkBuddy</strong> (腾讯) · <strong>Trae CN</strong> (字节跳动) · <strong>Qoder CN</strong><br>
-  <strong>MiniMax Code</strong> (MiniMax) · <strong>豆包</strong> (字节跳动)
+  <strong>5 个平台</strong>：<strong>WorkBuddy</strong> (腾讯) · <strong>Trae CN</strong> (字节跳动) · <strong>Qoder CN</strong><br>
+  <strong>MiniMax Code</strong> (MiniMax) · <strong>豆包</strong> (字节跳动)<br>
+  纯 Python 标准库 · 无需启动客户端 · launchd 静默排程
 </p>
 
 <p align="center">
@@ -11,6 +12,7 @@
   <img src="https://img.shields.io/badge/Arch-Apple%20Silicon%20%7C%20Intel-blue?style=flat-square" alt="Architecture">
   <img src="https://img.shields.io/badge/Python-3.8%2B%20(Zero--Dep)-3776AB?logo=python&logoColor=white&style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Scheduler-macOS%20launchd-007AFF?style=flat-square" alt="launchd">
+  <img src="https://img.shields.io/badge/Clients-5%20platforms-orange?style=flat-square" alt="5 platforms">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
 </p>
 
@@ -18,9 +20,9 @@
 
 ## ⚠️ 使用前必读
 
-* **本项目调用的是各客户端的未公开接口**，并非官方签到入口。自动化领取积分、以及 Trae 的设备指纹对齐逻辑，可能违反对应平台的服务条款，存在账号被限制的风险。请自行评估。
+* **本项目调用的是各客户端的未公开接口**，并非官方签到入口（唯一例外：MiniMax 官方 TUI 自带 `/checkin`，本项目复刻其签名协议以便静默执行）。自动化领取积分、Trae 的设备指纹对齐逻辑，以及豆包绕过前端签名的裸请求，都可能违反对应平台的服务条款，存在账号或会话被限制的风险。请自行评估。
 * **默认安装 (`bash install.sh`) 会立即使用你本机已登录的账号，向五个平台发送签到请求**。只想准备文件、不发起任何请求，请用 `--dry-run`（纯预览）或 `--no-run`（部署+注册但不试跑）。
-* 安装过程会**读取本机客户端的登录态**，Qoder 与豆包部分还会读取 macOS 钥匙串。首次可能弹出系统授权对话框，请在「终端」里手动跑一次并选「始终允许」。
+* 安装过程会**读取本机客户端的登录态**，Qoder 与豆包部分还会读取 macOS 钥匙串（`Doubao Browser Safe Storage`）。首次可能弹出系统授权对话框，请在「终端」里手动跑一次并选「始终允许」；后台任务读不到时会明确报 `NO_AUTH`，不会静默失败。
 * **豆包走的是未签名裸 HTTP 接口**：上游实测连续请求可能让整个会话被降权，连客户端手工签到都会失效。项目已加「每天最多一次 + 写请求绝不重试」的约束，详见下方「MiniMax Code 与豆包」；遇到 `710010702` 请改用客户端手工签到，不要反复重跑。
 * 项目**不会自动更新**，也不建议为它开启自动拉取最新代码：各上游客户端的私有协议随时可能变化，无版本锁定的自动更新会显著放大供应链风险。请固定到带版本号的 tag，并手动升级。
 * 仅供个人学习与自动化探索使用，请遵守各平台服务条款。
@@ -31,14 +33,15 @@
 
 很多开发者每天都会使用 **WorkBuddy**、**Trae**、**Qoder**、**MiniMax Code**、**豆包** 等 AI 工具。为了维持每天的高速并发请求或获得更多使用额度，需要每天打开客户端挨个点击签到、领积分或开盲盒。
 
-但这些客户端**没有官方网页版签到入口**，传统方式要么人肉每天点一遍，要么依赖笨重的 UI 点击脚本（需要亮屏、解锁，且容易点偏）。
+但多数客户端**没有官方网页版签到入口**（MiniMax 的签到命令只存在于 TUI 内），传统方式要么人肉每天点一遍，要么依赖笨重的 UI 点击脚本（需要亮屏、解锁，且容易点偏）。
 
 **本项目直接解构客户端的鉴权与签到协议**：
 
 * ⚡ **纯静默 API 协议流**：无需启动客户端界面，电脑不闪烁。
-* 🪶 **零外部依赖**：纯 Python 标准库，无需 `pip install`。
+* 🪶 **零 pip 依赖**：纯 Python 标准库，无需 `pip install`；豆包的 Cookie 解密调用 macOS 自带的 `/usr/bin/openssl`，不装 Playwright、不装浏览器。
 * 🔒 **凭据只在本地使用**：读取本机已登录 Session，不上传任何凭据，不设内置密钥；落盘的缓存文件以 `0600` 保存。
 * ⏰ **launchd 原生排程**：每天 10:05 / 15:05 / 20:05 静默执行，锁屏照常跑；休眠期间错过的时间点，唤醒后由 launchd 补偿补跑。
+* 🛡️ **风控感知**：每个平台都先查状态再决定是否领取；豆包额外限制「每天最多一轮、写请求恰好一次」，详见下方专章。
 
 ---
 
@@ -49,6 +52,10 @@
 | **WorkBuddy**<br>(腾讯生态) | `/Applications/WorkBuddy.app` | • 每日签到（+100 积分，连续签到累计）<br>• 自动开 Buddy 盲盒<br>• 自动领取 Buddy 旅行礼物<br>• 自动接取成长中心全量活动任务 | 00:00 |
 | **Trae CN**<br>(字节跳动) | `/Applications/Trae CN.app` | • 每日签到（+100 积分/额度）<br>• 实时可用额度与消耗回查<br>• 设备指纹自动对齐（抗 9074 限流保护机制） | 00:00 |
 | **Qoder CN** | `/Applications/Qoder CN.app`（兼容 `Qoder.app`） | • 每日通用 100 Credits 自动 Claim<br>• 本地钥匙串凭证解密与 Campaign 状态回查 | 10:00 |
+| **MiniMax Code**<br>(MiniMax) | `/Applications/MiniMax Code.app`<br>凭据：`~/.minimax/auth/` | • 7 日签到面板状态回查 + 自动领取（实测 +400 积分/日）<br>• 复刻官方 TUI 的 `status` / `claim` 签名协议<br>• 连签天数与当日积分可读诊断 | 以服务端 7 日面板为准 |
+| **豆包**<br>(字节跳动) | `/Applications/Doubao.app`<br>凭据：`.../Doubao/Default/Cookies` | • 活动详情只读查询 + 签到领额度（实测 +200 额度）<br>• **当天已处理守卫**，一天三次排程也只打一轮<br>• 活动码可配置，换季无需改代码 | 以活动页为准 |
+
+> 表中积分/额度为 2026-11-08 实测值，实际发放以各平台官方活动规则为准，可能随时调整。新增两个平台的凭据、接口与风控说明见「MiniMax Code 与豆包」章节。
 
 ---
 
@@ -56,8 +63,9 @@
 
 1. **操作系统**：macOS 11.0+，Apple Silicon 与 Intel 均可。macOS 13+ 首次注册后台服务时，可能需要在「系统设置 → 通用 → 登录项与扩展」批准。
 2. **Python**：系统自带 `/usr/bin/python3` 或 Homebrew Python，3.8+，**无需 pip 依赖**（已在 macOS 27.2 + Python 3.9.6 实测通过）。
-3. **客户端状态**：对应 App 已装在 `/Applications/`，且**至少打开并登录过一次**（确保本地已生成合法会话）。
-4. **终端会话**：`launchctl` 注册需要在图形登录会话的「终端」里执行；SSH / 某些自动化沙盒会话会失败（见故障排查）。
+3. **openssl**：豆包 Cookie 解密需要 `/usr/bin/openssl`（macOS 自带；缺失时安装 Xcode Command Line Tools）。`doctor` 会静态检查其存在性。
+4. **客户端状态**：对应 App 已装在 `/Applications/`，且**至少打开并登录过一次**（确保本地已生成合法会话）。豆包需在登录后**退出一次客户端**让 Cookie 落盘；MiniMax 也可通过官方 CLI 登录生成 `~/.minimax/auth/`。未安装的平台会在 `doctor` 里标红，不影响其他平台。
+5. **终端会话**：`launchctl` 注册需要在图形登录会话的「终端」里执行；SSH / 某些自动化沙盒会话会失败（见故障排查）。
 
 ---
 
@@ -67,7 +75,7 @@
 # 0. 建议先固定在带版本号的 tag，而不是直接跟 main
 git clone https://github.com/RAyymask/mac-ai-auto-checkin.git
 cd mac-ai-auto-checkin
-git checkout <tag>            # 例如 v1.1.0
+git checkout <tag>            # 例如 v1.2.0（发布后）；也可用某个 commit SHA 固定
 
 # 1. 纯预览：不写文件、不注册、不发请求
 bash install.sh --dry-run
@@ -76,17 +84,19 @@ bash install.sh --dry-run
 bash install.sh
 ```
 
-`install.sh` 会依次完成：**部署脚本** → **生成并注册 LaunchAgent** → **立即试跑一次**（这一步会发网络请求）。
+`install.sh` 会依次完成：**部署脚本** → **生成并注册 LaunchAgent** → **立即试跑一次**（这一步会向五个平台发网络请求）。
+
+> 首次安装建议先跑两个新平台的 `--dry-run`（只读、不领取），确认凭据与签名都通了再执行默认安装；豆包尤其不建议在状态不明时反复重跑。
 
 ### 安装选项是三态的，不是一句「安装完成」
 
-脚本结束时会分别报告三个状态，**任一失败都不会被静默吞掉**：
+脚本结束时会分别报告三个阶段的状态（**不是三个平台**），**任一失败都不会被静默吞掉**：
 
 | 状态 | 含义 | 失败时的影响 |
 | :--- | :--- | :--- |
 | `1/3 文件部署` | `~/.auto-checkin/` 脚本与 `~/Library/LaunchAgents/*.plist` | 后续全部不可用 |
 | `2/3 服务注册` | `launchctl bootstrap` 是否成功 | 文件已就位，但**本次会话不会自动签到** |
-| `3/3 试跑验证` | 五个客户端本轮签到结果 | 不影响定时服务，可手动重跑 |
+| `3/3 试跑验证` | 五个平台本轮签到结果（豆包命中当日守卫时显示「今日已处理，跳过」） | 不影响定时服务，可手动重跑 |
 
 退出码：`0` 全部成功，`1` 服务注册失败，`2` 试跑有失败项。注册失败时脚本会打印针对性诊断，并继续完成自检与试跑，**不会假装成功**。
 
@@ -100,14 +110,18 @@ bash install.sh --check     # 离线自检（doctor），不联网、不读取�
 bash install.sh --help
 ```
 
+---
+
 ## 🆕 MiniMax Code 与豆包
 
-两者都复用本机客户端登录态，**仍然零第三方依赖、纯 Python 标准库**（豆包的 AES 解密调用 macOS 自带的 `/usr/bin/openssl`）。
+两者都复用本机客户端登录态，**仍然零第三方依赖、纯 Python 标准库**（豆包的 AES 解密调用 macOS 自带的 `/usr/bin/openssl`，不是 Python 包）。新增脚本为 `scripts/minimax_checkin.py` 与 `scripts/doubao_checkin.py`，`install.sh` 通配部署 `scripts/*.py`，升级时会自动带上。
+
+已于 2026-11-08 在本机实跑验证：MiniMax Code「今日已签到 +400 积分（第 1 天）」、豆包「今日已签到 +200 额度（连签 1 天）」。两者都命中幂等，**没有发出任何领取写请求**。
 
 | 平台 | 凭据来源 | 签到接口 | 幂等判定 |
 | :--- | :--- | :--- | :--- |
-| MiniMax Code | `~/.minimax/auth/prod/<region>/mcode-public/auth.json` 的 `accessToken`；`realUserID` 取自 `~/Library/Application Support/MiniMax/minimax-agent-cn-config.json` | `GET /minimax-cloud/api/v1/signin/status` + `POST .../claim`（官方 TUI 同款 md5 签名头） | 7 日面板 `is_today && status==3` |
-| 豆包 | `~/Library/Application Support/Doubao/Default/Cookies`；钥匙串 `Doubao Browser Safe Storage` 派生密钥 | `POST /alice/ug/campaign/v3/detail/`（只读）+ `/alice/ug/campaign/landing/checkin/` | 活动详情 `daily_checkin.checked_in_today` |
+| MiniMax Code | `~/.minimax/auth/prod/<region>/mcode-public/auth.json` 的 `accessToken`；`realUserID` 取自 `~/Library/Application Support/MiniMax/minimax-agent-cn-config.json` | `GET /minimax-cloud/api/v1/signin/status` + `POST .../claim`（官方 TUI 同款 md5 签名头）；CN `agent.minimaxi.com`，国际区 `agent.minimax.io` | 7 日面板 `is_today && status==3`；领取返回 `claim_result=2` 也视为今日已领 |
+| 豆包 | `~/Library/Application Support/Doubao/Default/Cookies`；钥匙串 `Doubao Browser Safe Storage` 派生密钥，用 `openssl` 解 AES-128-CBC | `POST /alice/ug/campaign/v3/detail/`（POST 方法，语义只读）+ `POST /alice/ug/campaign/landing/checkin/`，域名 `www.doubao.com` | 活动详情 `tasks[].campaign_code=="daily_signin"` 下的 `daily_checkin.checked_in_today` |
 
 ### ⚠️ 豆包裸接口的风控风险
 
@@ -132,7 +146,16 @@ DOUBAO_COOKIE='sessionid=...; sid_tt=...; uid_tt=...' python3 ~/.auto-checkin/do
 DOUBAO_CAMPAIGN_CODE=pc_incentive_task_mvp_v3 python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 ```
 
-豆包活动换季（返回 `campaign not found`）时更新 `DOUBAO_CAMPAIGN_CODE` 即可。首次读取豆包钥匙串可能弹系统授权框，请在「终端」里手动跑一次 `--dry-run` 并选「始终允许」，之后后台任务才读得到。
+| 环境变量 | 默认值 | 用途 |
+| :--- | :--- | :--- |
+| `MINIMAX_ACCESS_TOKEN` / `MINIMAX_USER_ID` | 读 `~/.minimax/auth/` 与客户端配置 | 手动注入 MiniMax 登录态；缺 `user_id` 会被网关判 401 |
+| `MINIMAX_REGION` | `cn` | `cn` → `agent.minimaxi.com`，`en` → `agent.minimax.io` |
+| `DOUBAO_COOKIE` | 读客户端 Cookie 库 | 手动注入 `sessionid` / `sid_tt` / `uid_tt` 三项，缺一即报 `NO_AUTH` |
+| `DOUBAO_CAMPAIGN_CODE` | `pc_incentive_task_mvp_v3` | 活动码，换季时更新 |
+| `DOUBAO_CLIENT_UA_VERSION` | `2.33.3` | UA 中的客户端版本号 |
+| `DOUBAO_FORCE` | 未设置 | 设为 `1` 绕过「当天已处理」守卫强制重跑（`run_all.py` 读取） |
+
+两个脚本都支持 `--dry-run`（只查状态，绝不领取）与 `--json`（兼容参数，输出本就是结构化结果）。豆包活动换季（返回活动不在期 / `campaign not found`）时更新 `DOUBAO_CAMPAIGN_CODE` 即可。首次读取豆包钥匙串可能弹系统授权框，请在「终端」里手动跑一次 `--dry-run` 并选「始终允许」，之后后台任务才读得到。
 
 > 协议参考：`MiniMax-AI/minimax-code`（官方 TUI 的 `http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`）、`hiclaw168-163/auto-signin-kit` 的 NOTE-04、`tututashu/doubao-auto-checkin`（MIT，macOS Cookie 解密）、`welldo/QinglongMy`。本项目未复制这些仓库的代码，仅实现其公开的协议契约。
 
@@ -142,7 +165,10 @@ DOUBAO_CAMPAIGN_CODE=pc_incentive_task_mvp_v3 python3 ~/.auto-checkin/doubao_che
 
 | 操作 | 命令 |
 | :--- | :--- |
-| 手动立即签到 | `~/.auto-checkin/checkin` |
+| 手动立即签到（五个平台） | `~/.auto-checkin/checkin` |
+| 只查 MiniMax 状态，不领取 | `python3 ~/.auto-checkin/minimax_checkin.py --dry-run` |
+| 只查豆包活动详情，不领取 | `python3 ~/.auto-checkin/doubao_checkin.py --dry-run` |
+| 强制重跑豆包（绕过当天守卫） | `DOUBAO_FORCE=1 ~/.auto-checkin/checkin` |
 | **离线自检（推荐排障第一步）** | `~/.auto-checkin/checkin doctor` |
 | 自检结果转 JSON（供脚本消费） | `~/.auto-checkin/checkin doctor --json` |
 | 签到结果转 JSON（不弹通知） | `~/.auto-checkin/checkin --json` |
@@ -152,21 +178,31 @@ DOUBAO_CAMPAIGN_CODE=pc_incentive_task_mvp_v3 python3 ~/.auto-checkin/doubao_che
 | 卸载（保留脚本与日志） | `bash uninstall.sh` |
 | 彻底卸载（删除目录，不可恢复） | `bash uninstall.sh --purge` |
 
-`doctor` 会检查 Python 版本、五个客户端是否安装、脚本完整性与语法、目录/凭据文件权限、`openssl` 与两个新平台的凭据文件是否就位、plist 内容与定时服务注册状态、日志体积，并给出修复命令。它**不联网**，也**不会打印任何 token 内容**。
+`doctor` 逐项检查 Python 版本、五个客户端是否安装、9 个脚本的完整性与语法、目录/凭据缓存权限、`openssl` 是否可用、豆包 Cookie 库与 MiniMax `auth.json` 是否就位、LaunchAgent plist 与定时服务注册状态、日志体积（本机实测共 14 项），并给出修复命令。它**不联网**，也**不会读取或打印任何凭据内容**。
 
 ---
 
-## 🔐 Qoder 钥匙串授权（以及卸载后的撤销）
+## 🔐 钥匙串授权（Qoder / 豆包，以及卸载后的撤销）
 
-首次读取 Qoder 桌面端的加密钥匙时，macOS 可能弹窗要求授权：
+两个平台需要读 macOS 钥匙串，首次可能弹窗要求授权：
 
 ```bash
+# Qoder：桌面端加密钥匙
 python3 ~/.auto-checkin/qoder_signin.py auto
+# 豆包：Cookie 解密密钥（--dry-run 只查状态，不会领取）
+python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 ```
 
-输入 Mac 开机密码并点击**「始终允许」(Always Allow)** 后，后台静默运行不再弹窗。
+输入 Mac 开机密码并点击**「始终允许」(Always Allow)** 后，后台静默运行不再弹窗。涉及的钥匙串条目：
 
-> **重要**：「始终允许」是 macOS 记在钥匙串条目上的系统级 ACL，**卸载脚本不会、也无法自动撤销**。卸载后请打开「钥匙串访问」→ 登录 → 密码类 →「Qoder CN App Safe Storage」→ 双击 →「访问控制」，删除 `python3` 对应条目，或改回「每次询问」。`uninstall.sh` 会再次提示这一点。
+| 平台 | 钥匙串条目 (service) |
+| :--- | :--- |
+| Qoder CN | `Qoder CN App Safe Storage` |
+| 豆包 | `Doubao Browser Safe Storage`（回退 `Doubao Safe Storage`） |
+
+> 某些自动化 / IDE 沙盒会话读钥匙串会间歇性超时并报 `NO_AUTH`，这不是脚本故障：在 macOS 自带的「终端」App 里手动跑一次上面的命令并选「始终允许」即可。
+
+> **重要**：「始终允许」是 macOS 记在钥匙串条目上的系统级 ACL，**卸载脚本不会、也无法自动撤销**。卸载后请打开「钥匙串访问」→ 登录 → 密码类 → 对应条目 → 双击 →「访问控制」，删除 `python3` / `security` 相关条目，或改回「每次询问」。`uninstall.sh` 会再次提示这一点。
 
 ---
 
@@ -197,8 +233,33 @@ python3 ~/.auto-checkin/qoder_signin.py auto
 
 * 确认对应 App 已安装在 `/Applications` 且**至少登录过一次**；
 * WorkBuddy / Trae 的登录态过期时，重新打开客户端登录一次；
-* Qoder 走钥匙串授权，见上一节；
-* 单独跑子脚本看详细输出：`python3 ~/.auto-checkin/signin.py auto`、`python3 ~/.auto-checkin/qoder_signin.py auto`。
+* Qoder / 豆包走钥匙串授权，见上一节；豆包还需退出一次客户端让 Cookie 落盘；
+* MiniMax Code：确认 `~/.minimax/auth/prod/<region>/mcode-public/auth.json` 存在且 `accessToken` 有效；返回 401/403 多为 `realUserID` 缺失或 token 过期，重新登录客户端即可，同时核对 `MINIMAX_REGION`；
+* 单独跑子脚本看详细输出：
+  ```bash
+  python3 ~/.auto-checkin/signin.py auto
+  python3 ~/.auto-checkin/qoder_signin.py auto
+  python3 ~/.auto-checkin/minimax_checkin.py --dry-run
+  python3 ~/.auto-checkin/doubao_checkin.py --dry-run
+  ```
+
+</details>
+
+<details>
+<summary>豆包返回 <code>710010702 系统错误</code> / 活动不在期</summary>
+
+* `710010702`：多为裸请求缺少 `a_bogus` 等前端签名导致会话被判异常，也可能是服务端故障。**不要反复重跑脚本**，请改用豆包客户端手工签到，必要时退出并重新登录以恢复会话。
+* 活动不在期（`campaign not found`）：活动换季了，更新 `DOUBAO_CAMPAIGN_CODE` 后先用 `--dry-run` 验证。
+* 出现「今日已处理，跳过」是**预期行为**（当天守卫），确需重跑才设 `DOUBAO_FORCE=1`。
+
+</details>
+
+<details>
+<summary>MiniMax Code 返回 401 / 签到面板查不到</summary>
+
+* 401/403：`user_id` 缺失会直接被网关拒绝，确认客户端配置里有 `sharedUser.realUserID`；token 过期则重新登录客户端。
+* 国际区用户设 `MINIMAX_REGION=en`（域名 `agent.minimax.io`）。
+* 用 `python3 ~/.auto-checkin/minimax_checkin.py --dry-run` 只读查看 7 日面板，不会消耗领取机会。
 
 </details>
 
@@ -215,7 +276,7 @@ python3 ~/.auto-checkin/qoder_signin.py auto
 
 * **锁屏 / 仅屏幕熄灭**：网络正常，脚本在 10:05 / 15:05 / 20:05 静默完成签到。
 * **合盖 / 深度休眠**：休眠期间 CPU 暂停。借助 `launchd` 对 `StartCalendarInterval` 的排程补偿，唤醒后错过的时间点会被补跑。
-* **幂等**：已签到会由服务端回查直接跳过，不会重复领取，也不会因多次排程触发风控。
+* **幂等**：所有平台都先回查状态，已签到直接跳过、不会重复领取；豆包额外有本地 `.doubao_done` 守卫，launchd 一天三次补跑也只发一轮请求，避免累积裸请求触发风控。
 
 ---
 
@@ -225,8 +286,10 @@ python3 ~/.auto-checkin/qoder_signin.py auto
 
 ```text
 每日签到助手 · AI 助手积分领取完毕
-✅ WorkBuddy: 今日已签 (+100积分)，连签 4 天; ✅ Trae: 今日已完成; ✅ Qoder: 已领今日 100 Credits; ✅ MiniMax Code: 签到成功 +100 积分; ✅ 豆包: 签到成功 +200 额度
+✅ WorkBuddy: 今日已签 (+100积分)，连签 4 天，累计 1200; ✅ Trae: 今日已完成; ✅ Qoder: 已领今日 100 Credits; ✅ MiniMax Code: 今日已签到 +400 积分（第 1 天）; ✅ 豆包: 今日已签到 +200 额度（连签 1 天）
 ```
+
+> 以上为示例文本，积分/额度数值来自服务端实时返回，会随官方活动调整。
 
 `checkin.log` 超过 1 MB 会自动轮转成 `checkin.log.1`。`launchd.out.log` / `launchd.err.log` 由 launchd 直接写入，无法在脚本内安全轮转，`doctor` 会在它们超过 1 MB 时提示手动清理。
 
@@ -237,21 +300,22 @@ python3 ~/.auto-checkin/qoder_signin.py auto
 * 部署目录 `~/.auto-checkin` 权限 `0700`；脚本、`checkin` 命令与 plist 均仅当前用户可读写。
 * `.trae_token_cache.json`、`trae-*.json`、state / device-id 文件里的 `refreshToken` 属于明文凭据，统一通过 `0600` 原子写入；安装时会把历史遗留的宽松权限一并收紧。
 * 子脚本输出经过脱敏（`[REDACTED]`）；`doctor` 只报告文件权限，**不读取也不打印凭据内容**。
-* 结果解析由 `checkin_protocol.py` 统一归一化，子脚本保留原有输出格式以兼容上游项目；Trae 额外输出一行 `__CHECKIN__ {json}` 机器可读结果。
-* 请求仅指向官方域名：`copilot.tencent.com`、`api.trae.cn`、`api.trae.com.cn`、`openapi.qoder.com.cn`。企业微信 / PushPlus 推送 token 从环境变量读取，默认关闭，无硬编码回传地址。
+* 结果解析由 `checkin_protocol.py` 统一归一化：新增脚本直接输出 `__CHECKIN__ {json}` 机器可读行，WorkBuddy / Trae / Qoder 等旧脚本保留原输出格式以兼容上游项目，由协议层兜底解析。
+* MiniMax token 与豆包 Cookie **只在内存中拼接请求头，不写入本项目任何文件**；`.doubao_done` 只记录日期字符串，同样 `0600`。
+* 请求仅指向官方域名：`copilot.tencent.com`、`api.trae.cn`、`api.trae.com.cn`、`openapi.qoder.com.cn`、`agent.minimaxi.com` / `agent.minimax.io`（MiniMax）、`www.doubao.com`（豆包）。企业微信 / PushPlus 推送 token 从环境变量读取，默认关闭，无硬编码回传地址。
 
 ---
 
 ## 📌 版本与校验（维护者建议）
 
-发布时请打 tag 并附 SHA-256，用户安装前可校验，避免直接跟随 `main`：
+发布时请打 tag 并附 SHA-256，用户安装前可校验，避免直接跟随 `main`（**当前仓库尚未打 tag**，在此之前请先固定到已知 commit SHA）：
 
 ```bash
-git checkout v1.1.0
+git checkout <tag>            # 换成实际发布的 tag，例如未来的 v1.2.0
 shasum -a 256 install.sh scripts/*.py
 ```
 
-本项目**不提供也不建议启用自动更新**：读的是私有协议，客户端更新随时可能导致脚本失效；固定版本 + 人工升级更安全。
+本项目**不提供也不建议启用自动更新**：读的是私有协议，客户端更新随时可能导致脚本失效；固定版本 + 人工升级更安全。五个平台中豆包的活动码与 MiniMax 的签名常量最易变化，升级前建议先跑两个 `--dry-run`。
 
 ---
 
@@ -259,9 +323,21 @@ shasum -a 256 install.sh scripts/*.py
 
 感谢开源社区先驱的逆向分析与脚本实践，本项目在开发过程中借鉴了以下优秀的开源成果：
 
+早期三个平台（WorkBuddy / Trae / Qoder）：
+
 * [88lin / workbuddy-auto-signin](https://github.com/88lin/workbuddy-auto-signin)
 * [L0NE-6 / Trae-AutoCheckin](https://github.com/L0NE-6/Trae-AutoCheckin)
 * [L0NE-6 / WorkBuddy-Daily](https://github.com/L0NE-6/WorkBuddy-Daily)
+
+MiniMax Code 与豆包（2026-11 新增）：
+
+* [MiniMax-AI / minimax-code](https://github.com/MiniMax-AI/minimax-code) — **官方** TUI 的 `/checkin` 实现（`http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`），端点、签名头与 7 日面板结构以此为准
+* [hiclaw168-163 / auto-signin-kit](https://github.com/hiclaw168-163/auto-signin-kit) — 豆包签到接口逆向（NOTE-04）与裸请求风控结论
+* [tututashu / doubao-auto-checkin](https://github.com/tututashu/doubao-auto-checkin)（MIT）— macOS 客户端 Cookie 解密链路与幂等前置检查
+* [welldo / QinglongMy](https://github.com/welldo/QinglongMy) — MiniMax token 续期与 JWT 诊断思路
+* [BorisSun0424-boop / zaoba](https://github.com/BorisSun0424-boop/zaoba)（MIT）— 多平台 launchd 调度设计参考
+
+> 本项目未复制上述仓库代码，仅实现其公开的协议契约；签名常量属于 wire-protocol 值，不是凭据。
 
 ---
 
