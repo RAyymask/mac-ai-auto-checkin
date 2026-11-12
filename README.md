@@ -23,7 +23,7 @@
 * **本项目调用的是各客户端的未公开接口**，并非官方签到入口（唯一例外：MiniMax 官方 TUI 自带 `/checkin`，本项目复刻其签名协议以便静默执行）。自动化领取积分、Trae 的设备指纹对齐逻辑，以及豆包绕过前端签名的裸请求，都可能违反对应平台的服务条款，存在账号或会话被限制的风险。请自行评估。
 * **默认安装 (`bash install.sh`) 会立即使用你本机已登录的账号，向五个平台发送签到请求**。只想准备文件、不发起任何请求，请用 `--dry-run`（纯预览）或 `--no-run`（部署+注册但不试跑）。
 * 安装过程会**读取本机客户端的登录态**，Qoder 与豆包部分还会读取 macOS 钥匙串（`Doubao Browser Safe Storage`）。首次可能弹出系统授权对话框，请在「终端」里手动跑一次并选「始终允许」；后台任务读不到时会明确报 `NO_AUTH`，不会静默失败。
-* **豆包走的是未签名裸 HTTP 接口**：上游实测连续请求可能让整个会话被降权，连客户端手工签到都会失效。项目已加「当天无论成功失败只跑一次 + 写请求绝不重试」的约束，并可随时用 `DOUBAO_DISABLE=1` 完全停用，详见下方「MiniMax Code 与豆包」；遇到 `710010702` 请改用客户端手工签到，不要反复重跑。
+* **豆包走的是未签名裸 HTTP 接口**：上游实测连续请求可能让整个会话被降权，连客户端手工签到都会失效（2026-11-13 本机实测确认）。项目已加「当天无论成功失败只跑一次 + 写请求绝不重试」的约束，并可随时用 `DOUBAO_DISABLE=1` 完全停用，详见下方「MiniMax Code 与豆包」；遇到 `710010702` **不要反复重跑**，先停用自动请求再手工签到；若客户端手工签到也失败，说明会话已被置为受限，需退出重登或重装客户端。
 * 项目**不会自动更新**，也不建议为它开启自动拉取最新代码：各上游客户端的私有协议随时可能变化，无版本锁定的自动更新会显著放大供应链风险。请固定到带版本号的 tag，并手动升级。
 * 仅供个人学习与自动化探索使用，请遵守各平台服务条款。
 
@@ -52,7 +52,7 @@
 | **WorkBuddy**<br>(腾讯生态) | `/Applications/WorkBuddy.app` | • 每日签到（+100 积分，连续签到累计）<br>• 自动开 Buddy 盲盒<br>• 自动领取 Buddy 旅行礼物<br>• 自动接取成长中心全量活动任务 | 00:00 |
 | **Trae CN**<br>(字节跳动) | `/Applications/Trae CN.app` | • 每日签到（+100 积分/额度）<br>• 实时可用额度与消耗回查<br>• 设备指纹自动对齐（抗 9074 限流保护机制） | 00:00 |
 | **Qoder CN** | `/Applications/Qoder CN.app`（兼容 `Qoder.app`） | • 每日通用 100 Credits 自动 Claim<br>• 本地钥匙串凭证解密与 Campaign 状态回查 | 10:00 |
-| **MiniMax Code**<br>(MiniMax) | `/Applications/MiniMax Code.app`<br>凭据：`~/.minimax/auth/` | • 7 日签到面板状态回查 + 自动领取（实测 +400 积分/日）<br>• 自动 token 续期（滚动缓存，避免 12 小时过期）<br>• 复刻官方 TUI 的 `status` / `claim` 签名协议<br>• 连签天数与当日积分可读诊断 | 以服务端 7 日面板为准 |
+| **MiniMax Code**<br>(MiniMax) | `/Applications/MiniMax Code.app`<br>凭据：`~/.minimax/auth/` | • 7 日签到面板状态回查 + 自动领取（实测 +400 积分/日）<br>• 尝试 token 续期（滚动缓存；CN 区 renewal 实测返回 401，会回退沿用客户端 token）<br>• 复刻官方 TUI 的 `status` / `claim` 签名协议<br>• 连签天数与当日积分可读诊断 | 以服务端 7 日面板为准 |
 | **豆包**<br>(字节跳动) | `/Applications/Doubao.app`<br>凭据：`.../Doubao/Default/Cookies` | • 活动详情只读查询 + 签到领额度（实测 +200 额度）<br>• **当天已处理守卫**，一天三次排程也只打一轮<br>• 活动码可配置，换季无需改代码 | 以活动页为准 |
 
 > 表中积分/额度为 2026-11-08 实测值，实际发放以各平台官方活动规则为准，可能随时调整。新增两个平台的凭据、接口与风控说明见「MiniMax Code 与豆包」章节。
@@ -118,7 +118,7 @@ bash install.sh --help
 
 已于 2026-11-08 在本机实跑验证：MiniMax Code「今日已签到 +400 积分（第 1 天）」、豆包「今日已签到 +200 额度（连签 1 天）」。两者都命中幂等，**没有发出任何领取写请求**。
 
-> 2026-11-12 复查修复了两处长期失效：客户端 `accessToken` 约 12 小时过期且本项目原先没有续期；豆包失败时不写当天标记，导致 `710010702` 被 launchd 一天重复打三次。详见下面两节。
+> 2026-11-12 复查修复了两处长期失效：客户端 `accessToken` 约 12 小时过期且本项目原先没有续期（**注：CN 区 renewal 端点后续实测不可用，见续期章节**）；豆包失败时不写当天标记，导致 `710010702` 被 launchd 一天重复打三次。详见下面两节。
 
 | 平台 | 凭据来源 | 签到接口 | 幂等判定 |
 | :--- | :--- | :--- | :--- |
@@ -127,13 +127,13 @@ bash install.sh --help
 
 ### ⚠️ 豆包裸接口的风控风险
 
-豆包活动页前端 SDK 会带 `a_bogus` / `msToken` / `web_id` 等签名与设备指纹，本项目的纯 HTTP 请求没有这一层。上游 `auto-signin-kit` 在 2026-11-07 实测：**连续发裸请求会让该会话被置为受限，之后连在客户端手工点签到都会失败，需重装客户端才恢复**。因此做了三道约束：
+豆包活动页前端 SDK 会带 `a_bogus` / `msToken` / `web_id` 等签名与设备指纹，本项目的纯 HTTP 请求没有这一层。上游 `auto-signin-kit` 在 2026-11-07 实测：**连续发裸请求会让该会话被置为受限，之后连在客户端手工点签到都会失败，需重装客户端才恢复**；2026-11-13 本机用 GUI 实点「立即签到」复现了「签到失败，请稍后重试」，确认这不是脚本缺签名的问题，而是账号会话本身被降权。因此做了三道约束：
 
 1. 领取前先查只读的 `v3/detail`，只有确认「今天还没签」才发写请求；只读查询失败就收手。
 2. 领取请求每次运行**恰好一次，绝不重试、不补发、事后不复查**（接口本身幂等）。
 3. `run_all.py` 有「当天已执行就跳过」守卫（标记 `~/.auto-checkin/.doubao_done`，0600）：**无论成功、幂等、鉴权失败还是 `710010702`，只要脚本跑过一次就标记当天**，LaunchAgent 一天三次触发也只打一轮。失败时更要熔断，否则正是上游警告的「连续裸请求」路径。需要重跑设 `DOUBAO_FORCE=1`；想彻底停掉该平台设 `DOUBAO_DISABLE=1`（不发送任何请求，也不影响其他四个平台）。
 
-返回 `710010702 系统错误` 时请**改用豆包客户端手工签到，不要反复重跑**。排查一律先用 `--dry-run`：
+返回 `710010702 系统错误` 时请**先设 `DOUBAO_DISABLE=1` 停掉自动请求，再改用豆包客户端手工签到，不要反复重跑**（会话已被置为受限时，客户端内手工签到也可能失败，见故障排查）。排查一律先用 `--dry-run`：
 
 ```bash
 python3 ~/.auto-checkin/minimax_checkin.py --dry-run   # 只查状态，不领取
@@ -184,15 +184,19 @@ MINIMAX_ACCESS_TOKEN  >  .minimax_token.json（7 天内）  >  客户端 auth.js
 * 续期得到的新 token **只写 `~/.auto-checkin/.minimax_token.json`（0600）**，绝不回写客户端文件。
 * 不再用本地 `expiresAtMs` 提前判死 —— 它只是客户端的建议刷新时间，最终以服务端 401/403 为准。
 * `--dry-run` **不发 renewal**（它是会改变服务端会话的 POST），只发一个只读 `status`；`--no-renew` 用于排查续期本身。
-* ⚠️ **续期要求当前 token 仍有效**。如果 token 已过期数天（例如本机连续多日 `NO_AUTH`），续期也会返回 401：请先在 MiniMax Code 客户端**重新登录一次**，然后运行：
+* ⚠️ **续期要求当前 token 仍有效**，且 CN 区该端点实测不可用（见下方）。token 已过期数天（例如本机连续多日 `NO_AUTH`）时，请先在 MiniMax Code 客户端**重新启动/重新登录一次**让 `auth.json` 刷新，再排查续期本身：
 
   ```bash
   python3 ~/.auto-checkin/minimax_checkin.py --renew
   ```
 
-  看到 `RENEWED` 即表示滚动链已点燃，之后每天自动续期，无需再手动登录。
+  看到 `RENEWED` 才算滚动链点燃；**CN 区目前不要指望这条链**，见下方实测。
 
-> **2026-11-12 端点实测**（用本机已过期凭据单发探测，未领取任何积分）：`Authorization: Bearer` → `400 请求异常，请检查请求参数`；`token:` 头 → `401「登陆失败，请稍后再试」`。401 说明请求形态已被服务端接受、只是凭据本身失效，因此当前实现是对的。本机 `auth.json` 的 token 已过期 4 天，**完整续期成功仍需先在 MiniMax Code 客户端重新登录一次**，然后跑 `--renew` 看到 `RENEWED` 才算闭环。
+> **2026-11-12 端点实测**（用本机已过期凭据单发探测，未领取任何积分）：`Authorization: Bearer` → `400 请求异常，请检查请求参数`；`token:` 头 → `401「登陆失败，请稍后再试」`。
+>
+> ⚠️ **2026-11-12 晚间复测推翻了上述乐观预期**：客户端重新登录、拿到**有效** token 后，CN 区 `/v1/api/user/renewal` 仍返回 `401 登陆失败`；换 `refreshToken` 作 `token:` 头同样 401。复核 `welldo/QinglongMy` 源码后确认，其 renewal 走的是 Windows 桌面端 `minimax-agent-config.json` 的 **JWT + 国际域名 `agent.minimax.io` + 完整桌面参数 + `client=desktop`**，与 CN 客户端 `~/.minimax/auth/` 的 60 字符 opaque token 是两套体系；本机 `minimax-agent-cn-config.json` 的 `tokens` 为空。
+>
+> **结论（CN 区）**：renewal 会失败，脚本回退沿用客户端 token，**签到本身不受影响**（实测 +400 积分正常），但「自动续期、无需再手动登录」不成立。实际仍依赖**客户端启动时自行刷新 `auth.json`**（本机 11-12 22:51 启动客户端后 `expiresAtMs` 顺延约 12 小时）。`--no-renew` 可跳过这次必然失败的 POST；后续版本应按 region 默认关闭 CN renewal。
 
 ---
 
@@ -286,10 +290,11 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 <details>
 <summary>豆包返回 <code>710010702 系统错误</code> / 活动不在期</summary>
 
-* `710010702`：多为裸请求缺少 `a_bogus` 等前端签名导致会话被判异常，也可能是服务端故障。**不要反复重跑脚本**，请改用豆包客户端手工签到，必要时退出并重新登录以恢复会话。
+* `710010702`：多为裸请求缺少 `a_bogus` 等前端签名导致会话被判异常，也可能是服务端故障。**不要反复重跑脚本**，先设 `DOUBAO_DISABLE=1` 停掉自动请求，再在客户端手工签到。
+* **客户端内点「立即签到」也提示「签到失败，请稍后重试」**：说明账号会话已被置为受限，不是脚本缺签名；GUI 自动化或重放签名都无法绕过。请退出豆包账号重新登录，仍失败则完全退出并重装客户端（上游实测），恢复前保持 `DOUBAO_DISABLE=1`。2026-11-13 本机 GUI 实测复现。
 * 活动不在期（`campaign not found`）：活动换季了，更新 `DOUBAO_CAMPAIGN_CODE` 后先用 `--dry-run` 验证。
 * 出现「今日已处理，跳过」是**预期行为**（当天守卫），确需重跑才设 `DOUBAO_FORCE=1`。
-* 会话已被限制时建议先设 `DOUBAO_DISABLE=1` 完全停掉自动请求，只保留其他四个平台，待客户端手工签到恢复正常后再取消。
+* 会话已被限制时建议先设 `DOUBAO_DISABLE=1` 完全停掉自动请求，只保留其他四个平台，待客户端手工签到恢复正常后再取消；需要长期停用可把该变量写进 LaunchAgent plist 的 `EnvironmentVariables` 并重新 `bootstrap`。
 
 </details>
 
@@ -297,7 +302,7 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 <summary>MiniMax Code 返回 401 / 签到面板查不到</summary>
 
 * 401/403：`user_id` 缺失会直接被网关拒绝，确认客户端配置里有 `sharedUser.realUserID`。
-* **token 过期**：客户端 `auth.json` 里的 `accessToken` 只有约 12 小时有效期，且只在桌面端启动时刷新；本项目每次运行会先调 `/v1/api/user/renewal` 换新 token 并写入 0600 缓存滚动续期，但**续期要求当前 token 仍然有效**。若已过期数天，必须在客户端重新登录一次，再跑 `minimax_checkin.py --renew` 重新点燃链条。
+* **token 过期**：客户端 `auth.json` 里的 `accessToken` 约 12 小时有效期，且只在桌面端启动时刷新。脚本每轮会尝试一次 `/v1/api/user/renewal` 并写入 0600 缓存，但 **CN 区该端点实测恒定 401**（见「MiniMax Code 的 token 续期」），会回退沿用原 token。因此 CN 区实际靠**打开一次客户端让它刷新 `auth.json`** 恢复，而不是靠自动续期；`--renew` 用于排查，`--no-renew` 可跳过这次无效 POST。
 * 想确认是不是续期环节的问题：`--no-renew` 跳过续期、`--dry-run` 只发 status 一个只读请求（不发 renewal / claim）。
 * 国际区用户设 `MINIMAX_REGION=en`（域名 `agent.minimax.io`）。
 
@@ -375,7 +380,7 @@ MiniMax Code 与豆包（2026-11 新增）：
 * [MiniMax-AI / minimax-code](https://github.com/MiniMax-AI/minimax-code) — **官方** TUI 的 `/checkin` 实现（`http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`），端点、签名头与 7 日面板结构以此为准
 * [hiclaw168-163 / auto-signin-kit](https://github.com/hiclaw168-163/auto-signin-kit) — 豆包签到接口逆向（NOTE-04）与裸请求风控结论
 * [tututashu / doubao-auto-checkin](https://github.com/tututashu/doubao-auto-checkin)（MIT）— macOS 客户端 Cookie 解密链路与幂等前置检查
-* [welldo / QinglongMy](https://github.com/welldo/QinglongMy) — `POST /v1/api/user/renewal` 续期端点与「滚动缓存让 token 一直保持新鲜」的思路（本项目已落地，但缓存写在本项目目录、不回写客户端）
+* [welldo / QinglongMy](https://github.com/welldo/QinglongMy) — `POST /v1/api/user/renewal` 续期端点与「滚动缓存让 token 一直保持新鲜」的思路（本项目已实现该流程，缓存写在本项目目录、不回写客户端；但该实现基于国际区 JWT 体系，CN 区实测不可用，见续期章节）
 * [BorisSun0424-boop / zaoba](https://github.com/BorisSun0424-boop/zaoba)（MIT）— 多平台 launchd 调度设计参考
 
 > 本项目未复制上述仓库代码，仅实现其公开的协议契约；签名常量属于 wire-protocol 值，不是凭据。

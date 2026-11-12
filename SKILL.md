@@ -98,7 +98,7 @@ macOS 系统对钥匙串（Keychain Access）有严格的应用沙盒保护机�
 ## 七、 快速安装与部署
 
 ### 1. 一键安装
-**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险；当天无论成功失败只跑一次，可用 `DOUBAO_DISABLE=1` 完全停用。详见 README「MiniMax Code 与豆包」章节）。MiniMax Code 会先自动续期 token，token 过期数天时需先在客户端重新登录再跑 `--renew`。建议先预览：
+**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险；当天无论成功失败只跑一次，可用 `DOUBAO_DISABLE=1` 完全停用。详见 README「MiniMax Code 与豆包」章节）。注意：会话被置为受限后，客户端内手工点「立即签到」同样会失败，需退出重登/重装客户端。MiniMax Code 会尝试续期 token，但 **CN 区 renewal 端点实测返回 401**，实际仍需靠客户端启动时刷新登录态；token 过期数天时先在客户端重新登录再签到。建议先预览：
 ```bash
 git clone https://github.com/RAyymask/mac-ai-auto-checkin.git
 cd mac-ai-auto-checkin

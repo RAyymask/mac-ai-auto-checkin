@@ -28,8 +28,12 @@
   绝不回写客户端 auth.json，避免破坏 MiniMax Code 自己的登录态。
 
   注意：续期要求「当前 token 仍有效」。若 token 已过期数天，续期会返回
-  401，此时必须在客户端重新登录一次（或设置 MINIMAX_ACCESS_TOKEN）来
-  重新点燃滚动链，之后每天自动续期即可长期免维护。
+  401，此时必须打开一次客户端让它刷新 auth.json（或设置
+  MINIMAX_ACCESS_TOKEN）。
+  !! 2026-11-12 CN 区实测：即便 token 有效，/v1/api/user/renewal 仍恒定
+  返回 401（参考实现走的是国际区 JWT + agent.minimax.io，与 CN 的 opaque
+  token 不是一套体系）。CN 区该 POST 必然失败，脚本回退沿用原 token，
+  签到不受影响；--no-renew 可跳过。别依赖「自动续期长期免维护」。
 
 凭据（零配置，按优先级）
   1. 环境变量 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID / MINIMAX_REGION
@@ -39,7 +43,7 @@
               minimax-agent-cn-config.json 的 sharedUser.realUserID
 
 用法
-  python3 minimax_checkin.py                # 自动续期 + 查询状态，未签才领取
+  python3 minimax_checkin.py                # 尝试续期 + 查询状态，未签才领取
   python3 minimax_checkin.py --renew        # 只续期并写缓存，不签到（重新登录后先跑它）
   python3 minimax_checkin.py --dry-run      # 只查状态，不发任何写请求（含续期）
   python3 minimax_checkin.py --no-renew     # 跳过续期，用于排查
