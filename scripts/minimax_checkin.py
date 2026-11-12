@@ -7,11 +7,12 @@
       packages/tui/src/checkin/http-gateway.ts
       packages/tui/src/runtime/public-gateway.ts
       packages/shared/src/daily-signin.ts
-  - welldo/QinglongMy/minimax_checkin.py（token 续期与诊断思路）
+  - welldo/QinglongMy/minimax_checkin.py（国际区 renewal 与诊断思路）
+  - VICqiufeeng/dsh-minimax-connect（CN 区 OAuth2 refresh grant 实测契约）
 
 协议要点
   CN 域名  https://agent.minimaxi.com      国际域名 https://agent.minimax.io
-  续期     POST /v1/api/user/renewal  body {}  -> data.token（新 token）
+  续期     POST /v1/api/user/renewal  body {}  -> data.token（仅国际区 JWT 体系）
   状态查询 GET  /minimax-cloud/api/v1/signin/status
   领取     POST /minimax-cloud/api/v1/signin/claim   body {}
   鉴权     Authorization: Bearer <accessToken>，query 里必须带 user_id=realUserID
@@ -19,21 +20,24 @@
   幂等     status 面板中 is_today && status==3 表示今日已领；
            claim 的 claim_result 1=新领取 2=今日已领
 
-为什么需要续期
-  客户端 auth.json 里 accessToken 是 60 字符的 opaque token（不是 JWT），
-  其 expiresAtMs 只有约 12 小时，且只在桌面端启动时刷新。桌面端每次启动
-  都会先调 /v1/api/user/renewal 用旧 token 换新 token（顺延约 40 天），
-  本项目把这一步搬进签到流程：先续期、再查状态、最后才决定是否领取。
-  续期得到的新 token **只写本项目目录的 .minimax_token.json（0600）**，
-  绝不回写客户端 auth.json，避免破坏 MiniMax Code 自己的登录态。
+凭据体系（2026-11-13 查证，两套协议不要混用）
+  CN 区桌面端是 OAuth2：auth.json 里同时有 accessToken(mmoat_) 与
+  refreshToken(mmort_)，都是 60 字符 opaque token（不是 JWT）。真实续期是
+  POST https://account.minimax.cn/oauth2/token，
+  grant_type=refresh_token / client_id=mcode-public / audience=agent-backend；
+  refresh_token 单次使用且每次轮换，必须原子回写 auth.json + auth-state.json
+  并递增 generation，否则客户端会把自己的新 token 判成「已登出」。
+  本项目刻意不接管这一步：它要改客户端登录态，写坏会锁死账号。
 
-  注意：续期要求「当前 token 仍有效」。若 token 已过期数天，续期会返回
-  401，此时必须打开一次客户端让它刷新 auth.json（或设置
-  MINIMAX_ACCESS_TOKEN）。
-  !! 2026-11-12 CN 区实测：即便 token 有效，/v1/api/user/renewal 仍恒定
-  返回 401（参考实现走的是国际区 JWT + agent.minimax.io，与 CN 的 opaque
-  token 不是一套体系）。CN 区该 POST 必然失败，脚本回退沿用原 token，
-  签到不受影响；--no-renew 可跳过。别依赖「自动续期长期免维护」。
+  /v1/api/user/renewal 属于另一套（旧版/国际区）协议：Windows 桌面端
+  minimax-agent-config.json 里的 HS256 JWT + agent.minimax.io + `token:` 头，
+  返回 data.token 新 JWT（参考 welldo/QinglongMy）。把 CN 的 mmoat_ 塞进
+  这个端点会恒定 401「登陆失败」，与 token 是否过期无关。
+
+  因此 **CN 区默认不发 renewal**，直接拿客户端 auth.json 的 accessToken 签到，
+  token 由客户端启动时自行刷新（本机实测约 12 小时有效期）。国际区默认保留
+  renewal；MINIMAX_RENEW=1/0 可强制覆盖，--renew 用于显式探测。
+  续期成功得到的新 token 只写 .minimax_token.json（0600），绝不回写客户端。
 
 凭据（零配置，按优先级）
   1. 环境变量 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID / MINIMAX_REGION
@@ -43,10 +47,11 @@
               minimax-agent-cn-config.json 的 sharedUser.realUserID
 
 用法
-  python3 minimax_checkin.py                # 尝试续期 + 查询状态，未签才领取
-  python3 minimax_checkin.py --renew        # 只续期并写缓存，不签到（重新登录后先跑它）
+  python3 minimax_checkin.py                # CN 区：直接查状态，未签才领取（不发 renewal）
+  python3 minimax_checkin.py --renew        # 显式探测续期端点，不签到（CN 区预期 401）
   python3 minimax_checkin.py --dry-run      # 只查状态，不发任何写请求（含续期）
-  python3 minimax_checkin.py --no-renew     # 跳过续期，用于排查
+  python3 minimax_checkin.py --no-renew     # 跳过续期（CN 区默认已是跳过）
+  MINIMAX_RENEW=1 python3 minimax_checkin.py   # 强制启用 renewal（国际区默认开启）
   python3 minimax_checkin.py --json         # 结果同时以 JSON 打印
 """
 
@@ -302,11 +307,10 @@ def build_request(origin, path, cred, method, body_str=None):
         "x-signature": x_signature,
     }
     if path == RENEW_PATH:
-        # /v1/api/user/renewal 属于桌面端登录 API，只认 `token:` 头；
+        # /v1/api/user/renewal 是旧版/国际区桌面端登录 API，只认 `token:` 头；
         # 沿用 signin 网关的 Authorization: Bearer 会被判
-        # 400「请求异常，请检查请求参数」。2026-11-12 在 agent.minimaxi.com
-        # 实测：换成 token 头后，同一个已过期凭据返回 401「登陆失败」，
-        # 说明请求形态已被接受，仅凭据本身失效。
+        # 400「请求异常，请检查请求参数」。CN 区即使换成 token 头也恒定
+        # 401「登陆失败」：端点与凭据体系不匹配（详见文件头「凭据体系」）。
         del headers["Authorization"]
         headers["token"] = cred["token"]
     url = "%s%s?%s" % (origin, path, query)
@@ -393,7 +397,7 @@ def try_renew(cred):
     if status == 0:
         return "", "网络异常：%s" % err
     if status in (401, 403):
-        return "", "HTTP %d%s（token 已失效，需在客户端重新登录一次）" % (status, suffix)
+        return "", "HTTP %d%s（凭据不适用或已失效；CN 区请启动客户端刷新 auth.json）" % (status, suffix)
     if status != 200:
         return "", "HTTP %d%s" % (status, suffix)
     data = body if isinstance(body, dict) else {}
@@ -424,6 +428,24 @@ def renew_one(cred):
     return None, why
 
 
+def renew_enabled(cred, renew_only=False):
+    """是否发送 renewal POST。
+
+    CN 区客户端走 OAuth2 refresh_token（account.minimax.cn/oauth2/token），
+    与 /v1/api/user/renewal（国际区 JWT + agent.minimax.io）不是一套协议，
+    实测对有效 token 也恒定 401。故 CN 默认关闭、国际区默认开启；
+    MINIMAX_RENEW=1/0 可强制覆盖，--renew 始终允许显式探测。
+    """
+    if renew_only:
+        return True
+    flag = os.environ.get("MINIMAX_RENEW", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    return cred.get("region") == "en"
+
+
 def run(dry_run=False, renew_only=False, no_renew=False):
     cands = credential_candidates()
     if not cands:
@@ -434,18 +456,23 @@ def run(dry_run=False, renew_only=False, no_renew=False):
                       "请设置 MINIMAX_USER_ID 或登录客户端后重试")
 
     # 1) 续期。--dry-run 严格不发任何写请求：renewal 是 POST，会改变服务端会话。
+    #    CN 区默认跳过：该端点属国际区 JWT 协议，发过去必然 401，只是噪声。
     renewed, renew_note = None, ""
-    if not dry_run and not no_renew:
+    if not dry_run and not no_renew and renew_enabled(cands[0], renew_only):
         renewed, renew_note = renew_one(cands[0])
         if renewed is None:
             log("续期未成功（沿用现有 token，不重复尝试）：%s" % renew_note)
+    elif not dry_run and not no_renew and not renew_only:
+        log("按 region 跳过 renewal（CN 区不兼容该端点）；"
+            "accessToken 由 MiniMax Code 客户端启动时自行刷新")
 
     if renew_only:
         if renewed:
-            return finish("RENEWED", "token 续期成功，已写入 0600 缓存；后续签到会自动滚动续期",
-                          token_source="renewal")
-        return finish("NO_AUTH", "token 续期失败：%s；请在 MiniMax Code 客户端重新登录一次"
-                      % (renew_note or "未尝试"))
+            return finish("RENEWED", "token 续期成功，已写入 0600 缓存"
+                          "（国际区后续签到会滚动续期）", token_source="renewal")
+        return finish("NO_AUTH", "token 续期失败：%s；CN 区该端点不适用，"
+                      "请打开 MiniMax Code 客户端让它刷新 auth.json，"
+                      "或设置 MINIMAX_ACCESS_TOKEN" % (renew_note or "未尝试"))
 
     active = renewed or cands[0]
 
@@ -466,8 +493,8 @@ def run(dry_run=False, renew_only=False, no_renew=False):
     if status == 0:
         return finish("ERROR", "网络异常：%s" % err)
     if status in (401, 403):
-        hint = ("；请在 MiniMax Code 客户端重新登录一次，再运行 "
-                "`minimax_checkin.py --renew` 点燃续期链")
+        hint = ("；请打开 MiniMax Code 客户端让它刷新 auth.json，"
+                "或设置 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID")
         if renew_note:
             hint += "（本轮续期失败：%s）" % renew_note[:100]
         return finish("NO_AUTH", "鉴权失败 HTTP %d：token 失效或 user_id 不匹配%s"
@@ -522,9 +549,9 @@ def run(dry_run=False, renew_only=False, no_renew=False):
 
 def main():
     ap = argparse.ArgumentParser(description="MiniMax Code 每日签到")
-    ap.add_argument("--renew", action="store_true", help="只续期 token 并写缓存，不签到")
+    ap.add_argument("--renew", action="store_true", help="显式探测续期端点，不签到（CN 区预期 401）")
     ap.add_argument("--dry-run", action="store_true", help="只查状态，不发任何写请求（含续期）")
-    ap.add_argument("--no-renew", action="store_true", help="跳过自动续期，用于排查")
+    ap.add_argument("--no-renew", action="store_true", help="跳过续期（CN 区默认已跳过）")
     ap.add_argument("--json", action="store_true", help="兼容参数：结果本就是结构化输出")
     args = ap.parse_args()
     try:

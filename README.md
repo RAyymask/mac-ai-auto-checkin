@@ -52,7 +52,7 @@
 | **WorkBuddy**<br>(腾讯生态) | `/Applications/WorkBuddy.app` | • 每日签到（+100 积分，连续签到累计）<br>• 自动开 Buddy 盲盒<br>• 自动领取 Buddy 旅行礼物<br>• 自动接取成长中心全量活动任务 | 00:00 |
 | **Trae CN**<br>(字节跳动) | `/Applications/Trae CN.app` | • 每日签到（+100 积分/额度）<br>• 实时可用额度与消耗回查<br>• 设备指纹自动对齐（抗 9074 限流保护机制） | 00:00 |
 | **Qoder CN** | `/Applications/Qoder CN.app`（兼容 `Qoder.app`） | • 每日通用 100 Credits 自动 Claim<br>• 本地钥匙串凭证解密与 Campaign 状态回查 | 10:00 |
-| **MiniMax Code**<br>(MiniMax) | `/Applications/MiniMax Code.app`<br>凭据：`~/.minimax/auth/` | • 7 日签到面板状态回查 + 自动领取（实测 +400 积分/日）<br>• 尝试 token 续期（滚动缓存；CN 区 renewal 实测返回 401，会回退沿用客户端 token）<br>• 复刻官方 TUI 的 `status` / `claim` 签名协议<br>• 连签天数与当日积分可读诊断 | 以服务端 7 日面板为准 |
+| **MiniMax Code**<br>(MiniMax) | `/Applications/MiniMax Code.app`<br>凭据：`~/.minimax/auth/` | • 7 日签到面板状态回查 + 自动领取（实测 +400 积分/日）<br>• 读取客户端 `accessToken`（OAuth2 opaque token）；**CN 区默认不发必然 401 的 renewal**<br>• 复刻官方 TUI 的 `status` / `claim` 签名协议<br>• 连签天数与当日积分可读诊断 | 以服务端 7 日面板为准 |
 | **豆包**<br>(字节跳动) | `/Applications/Doubao.app`<br>凭据：`.../Doubao/Default/Cookies` | • 活动详情只读查询 + 签到领额度（实测 +200 额度）<br>• **当天已处理守卫**，一天三次排程也只打一轮<br>• 活动码可配置，换季无需改代码 | 以活动页为准 |
 
 > 表中积分/额度为 2026-11-08 实测值，实际发放以各平台官方活动规则为准，可能随时调整。新增两个平台的凭据、接口与风控说明见「MiniMax Code 与豆包」章节。
@@ -118,7 +118,7 @@ bash install.sh --help
 
 已于 2026-11-08 在本机实跑验证：MiniMax Code「今日已签到 +400 积分（第 1 天）」、豆包「今日已签到 +200 额度（连签 1 天）」。两者都命中幂等，**没有发出任何领取写请求**。
 
-> 2026-11-12 复查修复了两处长期失效：客户端 `accessToken` 约 12 小时过期且本项目原先没有续期（**注：CN 区 renewal 端点后续实测不可用，见续期章节**）；豆包失败时不写当天标记，导致 `710010702` 被 launchd 一天重复打三次。详见下面两节。
+> 2026-11-12 修复了两处长期失效：豆包失败时不写当天标记，导致 `710010702` 被 launchd 一天重复打三次；MiniMax 本地 `expiresAtMs` 硬拦截导致连续 13 轮误判过期。另于 2026-11-13 查清 CN 区 renewal 属协议错配并默认关闭，见「登录态与『续期』坑」。
 
 | 平台 | 凭据来源 | 签到接口 | 幂等判定 |
 | :--- | :--- | :--- | :--- |
@@ -152,6 +152,7 @@ DOUBAO_CAMPAIGN_CODE=pc_incentive_task_mvp_v3 python3 ~/.auto-checkin/doubao_che
 | :--- | :--- | :--- |
 | `MINIMAX_ACCESS_TOKEN` / `MINIMAX_USER_ID` | 读 `~/.minimax/auth/` 与客户端配置 | 手动注入 MiniMax 登录态（优先级最高）；缺 `user_id` 会被网关判 401 |
 | `MINIMAX_REGION` | `cn` | `cn` → `agent.minimaxi.com`，`en` → `agent.minimax.io` |
+| `MINIMAX_RENEW` | CN 区 `0`、国际区 `1` | 设为 `1` 强制启用 `/v1/api/user/renewal`，`0` 强制关闭；CN 区启用必然 401，仅用于排查 |
 | `DOUBAO_COOKIE` | 读客户端 Cookie 库 | 手动注入 `sessionid` / `sid_tt` / `uid_tt` 三项，缺一即报 `NO_AUTH` |
 | `DOUBAO_CAMPAIGN_CODE` | `pc_incentive_task_mvp_v3` | 活动码，换季时更新 |
 | `DOUBAO_CLIENT_UA_VERSION` | `2.33.3` | UA 中的客户端版本号 |
@@ -160,43 +161,28 @@ DOUBAO_CAMPAIGN_CODE=pc_incentive_task_mvp_v3 python3 ~/.auto-checkin/doubao_che
 
 两个脚本都支持 `--dry-run`（只查状态，绝不领取）与 `--json`（兼容参数，输出本就是结构化结果）。豆包活动换季（返回活动不在期 / `campaign not found`）时更新 `DOUBAO_CAMPAIGN_CODE` 即可。首次读取豆包钥匙串可能弹系统授权框，请在「终端」里手动跑一次 `--dry-run` 并选「始终允许」，之后后台任务才读得到。
 
-> 协议参考：`MiniMax-AI/minimax-code`（官方 TUI 的 `http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`）、`hiclaw168-163/auto-signin-kit` 的 NOTE-04、`tututashu/doubao-auto-checkin`（MIT，macOS Cookie 解密）、`welldo/QinglongMy`。本项目未复制这些仓库的代码，仅实现其公开的协议契约。
+> 协议参考：`MiniMax-AI/minimax-code`（官方 TUI 的 `http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`）、`hiclaw168-163/auto-signin-kit` 的 NOTE-04、`tututashu/doubao-auto-checkin`（MIT，macOS Cookie 解密）、`welldo/QinglongMy`、`VICqiufeeng/dsh-minimax-connect`（CN 区 OAuth2 续期实测契约）。本项目未复制这些仓库的代码，仅实现其公开的协议契约。
 
 ---
 
-### 🔄 MiniMax Code 的 token 续期
+### 🔄 MiniMax Code 的登录态与「续期」坑
 
-客户端 `~/.minimax/auth/prod/<region>/mcode-public/auth.json` 里的 `accessToken` 是 60 字符的 opaque token（**不是 JWT**），带 `expiresAtMs`，实测只有约 12 小时有效期，且只在桌面端启动时刷新。桌面端每次启动都会先调 `POST /v1/api/user/renewal` 用旧 token 换新 token（顺延约 40 天），本项目把这一步搬进了签到流程：
+CN 区桌面端是标准 OAuth2：`~/.minimax/auth/prod/cn/mcode-public/auth.json` 里同时存 `accessToken`（`mmoat_…`）与 `refreshToken`（`mmort_…`），都是 60 字符 opaque token，**不是 JWT**；`expiresAtMs` 实测约 12 小时，由客户端启动时自行刷新。
 
-```
-MINIMAX_ACCESS_TOKEN  >  .minimax_token.json（7 天内）  >  客户端 auth.json
-        ↓ 首选凭据发一次 renewal（POST, body {}）
-        ↓ 成功 -> 新 token 写入 0600 缓存 + 本轮用它签到
-        ↓ 失败 -> 沿用原 token 查 status，由服务端判定；不重试 renewal
-        ↓ status 401 -> 其它候选只读回查一次，找到有效凭据就写缓存供下轮续期
-        ↓ 面板确认今日可领 -> 恰好一次 claim
-```
+| | 国际区 / 旧版桌面端 | CN 区桌面端（本机） |
+| :--- | :--- | :--- |
+| 凭据 | `minimax-agent-config.json` 里的 HS256 JWT | `auth.json` 的 `mmoat_` / `mmort_` |
+| 域名 | `agent.minimax.io` | 签到 `agent.minimaxi.com`；OAuth `account.minimax.cn` |
+| 续期 | `POST /v1/api/user/renewal` + `token:` 头 → `data.token` 新 JWT | `POST /oauth2/token`，`grant_type=refresh_token` + `client_id=mcode-public` + `audience=agent-backend` |
+| 轮换 | 旧 token 换新 token，顺延约 40 天 | `refresh_token` **单次使用、每次轮换**，须原子回写 `auth.json` + `auth-state.json` 并递增 `generation` |
 
-要点：
+**根因**：早期版本把 `welldo/QinglongMy` 的 renewal 直接搬过来，用 CN 的 `accessToken` 当 `token:` 头去打 `agent.minimaxi.com/v1/api/user/renewal`。端点、鉴权头、凭据类型三处都不属于同一体系，所以**即使 token 有效也恒定返回 `401 登陆失败`**——不是登录过期、不是签名错、不是服务端故障，而是协议错配（换 `refreshToken` 当头同样无效，2026-11-12 实测）。
 
-* **renewal 与 signin 的鉴权头不同**：`/v1/api/user/renewal` 属于桌面端登录 API，只认 `token:` 头；`signin/status` 与 `claim` 用官方 TUI 的 `Authorization: Bearer`。脚本按路径分别处理，用错头会被网关判 `400 请求异常，请检查请求参数`。
-* **一次运行最多发一个 renewal POST**，其余回退只走只读 `status`，避免无效写请求翻倍。
-* 续期得到的新 token **只写 `~/.auto-checkin/.minimax_token.json`（0600）**，绝不回写客户端文件。
-* 不再用本地 `expiresAtMs` 提前判死 —— 它只是客户端的建议刷新时间，最终以服务端 401/403 为准。
-* `--dry-run` **不发 renewal**（它是会改变服务端会话的 POST），只发一个只读 `status`；`--no-renew` 用于排查续期本身。
-* ⚠️ **续期要求当前 token 仍有效**，且 CN 区该端点实测不可用（见下方）。token 已过期数天（例如本机连续多日 `NO_AUTH`）时，请先在 MiniMax Code 客户端**重新启动/重新登录一次**让 `auth.json` 刷新，再排查续期本身：
+**已落地修复（2026-11-13）**：CN 区默认不再发这个必然失败的 POST，直接用客户端 `auth.json` 的 `accessToken` 走 `status` → `claim`；国际区仍默认启用 renewal。开关：`MINIMAX_RENEW=1` 强制开启、`MINIMAX_RENEW=0` 强制关闭，`--renew` 显式探测，`--dry-run` 严格零写请求。签到本身从未受影响（本机实测 +400 积分正常）。
 
-  ```bash
-  python3 ~/.auto-checkin/minimax_checkin.py --renew
-  ```
+**为什么不去「修好」CN 续期**：正确实现要拿 `refreshToken` 换 token，而它一次性轮换，必须同时原子回写客户端的 `auth.json`、`auth-state.json` 并同步 `generation` 与文件锁，否则桌面端会把自己的新 token 判成「已登出」、用户被迫重新扫码登录。为省一次客户端启动而去改写登录态，风险与收益完全不成比例。因此本项目**只读取、不接管**客户端的 OAuth 刷新。
 
-  看到 `RENEWED` 才算滚动链点燃；**CN 区目前不要指望这条链**，见下方实测。
-
-> **2026-11-12 端点实测**（用本机已过期凭据单发探测，未领取任何积分）：`Authorization: Bearer` → `400 请求异常，请检查请求参数`；`token:` 头 → `401「登陆失败，请稍后再试」`。
->
-> ⚠️ **2026-11-12 晚间复测推翻了上述乐观预期**：客户端重新登录、拿到**有效** token 后，CN 区 `/v1/api/user/renewal` 仍返回 `401 登陆失败`；换 `refreshToken` 作 `token:` 头同样 401。复核 `welldo/QinglongMy` 源码后确认，其 renewal 走的是 Windows 桌面端 `minimax-agent-config.json` 的 **JWT + 国际域名 `agent.minimax.io` + 完整桌面参数 + `client=desktop`**，与 CN 客户端 `~/.minimax/auth/` 的 60 字符 opaque token 是两套体系；本机 `minimax-agent-cn-config.json` 的 `tokens` 为空。
->
-> **结论（CN 区）**：renewal 会失败，脚本回退沿用客户端 token，**签到本身不受影响**（实测 +400 积分正常），但「自动续期、无需再手动登录」不成立。实际仍依赖**客户端启动时自行刷新 `auth.json`**（本机 11-12 22:51 启动客户端后 `expiresAtMs` 顺延约 12 小时）。`--no-renew` 可跳过这次必然失败的 POST；后续版本应按 region 默认关闭 CN renewal。
+**token 过期怎么办**：打开一次 MiniMax Code 客户端（启动即刷新 `auth.json`），或设置 `MINIMAX_ACCESS_TOKEN` / `MINIMAX_USER_ID`。CN 区不需要跑 `--renew`（预期就是 401）。
 
 ---
 
@@ -206,8 +192,8 @@ MINIMAX_ACCESS_TOKEN  >  .minimax_token.json（7 天内）  >  客户端 auth.js
 | :--- | :--- |
 | 手动立即签到（五个平台） | `~/.auto-checkin/checkin` |
 | 只查 MiniMax 状态，不领取 | `python3 ~/.auto-checkin/minimax_checkin.py --dry-run` |
-| 只续期 MiniMax token，不签到 | `python3 ~/.auto-checkin/minimax_checkin.py --renew` |
-| 跳过 MiniMax 自动续期（排查用） | `python3 ~/.auto-checkin/minimax_checkin.py --no-renew` |
+| 探测 renewal 端点（CN 区预期 401） | `python3 ~/.auto-checkin/minimax_checkin.py --renew` |
+| 强制启用 / 关闭 renewal（排查用） | `MINIMAX_RENEW=1 ~/.auto-checkin/checkin` / `MINIMAX_RENEW=0 ~/.auto-checkin/checkin` |
 | 只查豆包活动详情，不领取 | `python3 ~/.auto-checkin/doubao_checkin.py --dry-run` |
 | 强制重跑豆包（绕过当天守卫） | `DOUBAO_FORCE=1 ~/.auto-checkin/checkin` |
 | 临时停用豆包（会话受限时用） | `DOUBAO_DISABLE=1 ~/.auto-checkin/checkin` |
@@ -276,7 +262,7 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 * 确认对应 App 已安装在 `/Applications` 且**至少登录过一次**；
 * WorkBuddy / Trae 的登录态过期时，重新打开客户端登录一次；
 * Qoder / 豆包走钥匙串授权，见上一节；豆包还需退出一次客户端让 Cookie 落盘；
-* MiniMax Code：先在客户端重新登录一次，再跑 `minimax_checkin.py --renew` 点燃续期链；返回 401/403 也可能是 `realUserID` 缺失或 `MINIMAX_REGION` 不对；
+* MiniMax Code：打开一次客户端让 `auth.json` 刷新即可（CN 区不需要 `--renew`，该端点预期 401）；返回 401/403 也可能是 `realUserID` 缺失或 `MINIMAX_REGION` 不对；
 * 单独跑子脚本看详细输出：
   ```bash
   python3 ~/.auto-checkin/signin.py auto
@@ -294,7 +280,7 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 * **客户端内点「立即签到」也提示「签到失败，请稍后重试」**：说明账号会话已被置为受限，不是脚本缺签名；GUI 自动化或重放签名都无法绕过。请退出豆包账号重新登录，仍失败则完全退出并重装客户端（上游实测），恢复前保持 `DOUBAO_DISABLE=1`。2026-11-13 本机 GUI 实测复现。
 * 活动不在期（`campaign not found`）：活动换季了，更新 `DOUBAO_CAMPAIGN_CODE` 后先用 `--dry-run` 验证。
 * 出现「今日已处理，跳过」是**预期行为**（当天守卫），确需重跑才设 `DOUBAO_FORCE=1`。
-* 会话已被限制时建议先设 `DOUBAO_DISABLE=1` 完全停掉自动请求，只保留其他四个平台，待客户端手工签到恢复正常后再取消；需要长期停用可把该变量写进 LaunchAgent plist 的 `EnvironmentVariables` 并重新 `bootstrap`。
+* 会话已被限制时建议先设 `DOUBAO_DISABLE=1` 完全停掉自动请求，只保留其他四个平台，待客户端手工签到恢复正常后再取消；需要长期停用可把该变量写进 LaunchAgent plist 的 `EnvironmentVariables`，再执行 `launchctl bootout gui/$(id -u)/com.user.ai-daily-checkin` 与 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.ai-daily-checkin.plist` 重新加载（环境变量在加载时读入，改文件不会自动生效）。`install.sh` 重装时会保留这份本机定制。
 
 </details>
 
@@ -302,9 +288,9 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 <summary>MiniMax Code 返回 401 / 签到面板查不到</summary>
 
 * 401/403：`user_id` 缺失会直接被网关拒绝，确认客户端配置里有 `sharedUser.realUserID`。
-* **token 过期**：客户端 `auth.json` 里的 `accessToken` 约 12 小时有效期，且只在桌面端启动时刷新。脚本每轮会尝试一次 `/v1/api/user/renewal` 并写入 0600 缓存，但 **CN 区该端点实测恒定 401**（见「MiniMax Code 的 token 续期」），会回退沿用原 token。因此 CN 区实际靠**打开一次客户端让它刷新 `auth.json`** 恢复，而不是靠自动续期；`--renew` 用于排查，`--no-renew` 可跳过这次无效 POST。
-* 想确认是不是续期环节的问题：`--no-renew` 跳过续期、`--dry-run` 只发 status 一个只读请求（不发 renewal / claim）。
-* 国际区用户设 `MINIMAX_REGION=en`（域名 `agent.minimax.io`）。
+* **token 过期**：`auth.json` 的 `accessToken` 约 12 小时有效期，只在桌面端启动时刷新。CN 区**默认不发 renewal**（该端点属国际区 JWT 协议，恒定 401，详见「登录态与『续期』坑」），所以过期时**打开一次 MiniMax Code 客户端**即可恢复，或设 `MINIMAX_ACCESS_TOKEN`。
+* 想确认是不是续期环节的问题：`--dry-run` 只发一个只读 `status`（不发 renewal / claim）；`MINIMAX_RENEW=1` 可强制启用 renewal 观察报错。
+* 国际区用户设 `MINIMAX_REGION=en`（域名 `agent.minimax.io`），renewal 默认开启。
 
 </details>
 
@@ -347,7 +333,7 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 * 子脚本输出经过脱敏（`[REDACTED]`）；`doctor` 只报告文件权限，**不读取也不打印凭据内容**。
 * 结果解析由 `checkin_protocol.py` 统一归一化：新增脚本直接输出 `__CHECKIN__ {json}` 机器可读行，WorkBuddy / Trae / Qoder 等旧脚本保留原输出格式以兼容上游项目，由协议层兜底解析。
 * 豆包 Cookie **只在内存中拼接请求头，不写入本项目任何文件**；`.doubao_done` 只记录日期字符串，`0600`。
-* MiniMax 续期得到的新 token 会落在 `~/.auto-checkin/.minimax_token.json`（`0600` 原子写入，7 天软过期），**绝不回写客户端 `~/.minimax/auth/…/auth.json`**，避免破坏 MiniMax Code 自己的登录态；该缓存属于明文凭据，卸载时请用 `uninstall.sh --purge` 一并删除。
+* 国际区 renewal 成功得到的新 token 会落在 `~/.auto-checkin/.minimax_token.json`（`0600` 原子写入，7 天软过期），**绝不回写客户端 `~/.minimax/auth/…/auth.json`**；CN 区默认不续期，不会产生该缓存。缓存属于明文凭据，存在时请用 `uninstall.sh --purge` 一并删除。
 * 请求仅指向官方域名：`copilot.tencent.com`、`api.trae.cn`、`api.trae.com.cn`、`openapi.qoder.com.cn`、`agent.minimaxi.com` / `agent.minimax.io`（MiniMax）、`www.doubao.com`（豆包）。企业微信 / PushPlus 推送 token 从环境变量读取，默认关闭，无硬编码回传地址。
 
 ---
@@ -361,7 +347,7 @@ git checkout <tag>            # 换成实际发布的 tag，例如未来的 v1.2
 shasum -a 256 install.sh scripts/*.py
 ```
 
-本项目**不提供也不建议启用自动更新**：读的是私有协议，客户端更新随时可能导致脚本失效；固定版本 + 人工升级更安全。五个平台中豆包的活动码、MiniMax 的签名常量与续期端点最易变化，升级前建议先跑两个 `--dry-run`。
+本项目**不提供也不建议启用自动更新**：读的是私有协议，客户端更新随时可能导致脚本失效；固定版本 + 人工升级更安全。五个平台中豆包的活动码、MiniMax 的签名常量与登录态路径最易变化，升级前建议先跑两个 `--dry-run`。
 
 ---
 
@@ -380,7 +366,8 @@ MiniMax Code 与豆包（2026-11 新增）：
 * [MiniMax-AI / minimax-code](https://github.com/MiniMax-AI/minimax-code) — **官方** TUI 的 `/checkin` 实现（`http-gateway.ts` / `public-gateway.ts` / `daily-signin.ts`），端点、签名头与 7 日面板结构以此为准
 * [hiclaw168-163 / auto-signin-kit](https://github.com/hiclaw168-163/auto-signin-kit) — 豆包签到接口逆向（NOTE-04）与裸请求风控结论
 * [tututashu / doubao-auto-checkin](https://github.com/tututashu/doubao-auto-checkin)（MIT）— macOS 客户端 Cookie 解密链路与幂等前置检查
-* [welldo / QinglongMy](https://github.com/welldo/QinglongMy) — `POST /v1/api/user/renewal` 续期端点与「滚动缓存让 token 一直保持新鲜」的思路（本项目已实现该流程，缓存写在本项目目录、不回写客户端；但该实现基于国际区 JWT 体系，CN 区实测不可用，见续期章节）
+* [welldo / QinglongMy](https://github.com/welldo/QinglongMy) — `POST /v1/api/user/renewal` 与滚动缓存思路（仅适用于国际区 JWT 体系；本项目 2026-11-13 起 CN 区默认关闭该端点，见续期章节）
+* [VICqiufeeng / dsh-minimax-connect](https://github.com/VICqiufeeng/dsh-minimax-connect) — CN 区 `account.minimax.cn/oauth2/token` 的 `refresh_token` grant、单次轮换与 `generation` 规则实测记录，用于查清本次 401 根因（本项目**未**接管该刷新）
 * [BorisSun0424-boop / zaoba](https://github.com/BorisSun0424-boop/zaoba)（MIT）— 多平台 launchd 调度设计参考
 
 > 本项目未复制上述仓库代码，仅实现其公开的协议契约；签名常量属于 wire-protocol 值，不是凭据。

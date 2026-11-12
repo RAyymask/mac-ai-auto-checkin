@@ -1,6 +1,6 @@
 ---
 name: mac-ai-auto-checkin
-description: macOS 专用的 AI 办公与编程助手每日自动签到与积分领取 Skill。支持 WorkBuddy（每日签到+成长中心全任务）、Trae CN（每日签到+额度查询+防9074限流）、Qoder CN（每日 100 Credits）、MiniMax Code（7 日签到面板 + 自动 token 续期）、豆包（签到领额度，当天成败都只跑一次）。基于底层 API 协议流与本地桌面凭据自动提取，零 pip 依赖（豆包解密复用 macOS 自带 openssl），通过 macOS launchd 实现免开软件界面、锁屏/合盖唤醒即补跑的全自动静默签到。
+description: macOS 专用的 AI 办公与编程助手每日自动签到与积分领取 Skill。支持 WorkBuddy（每日签到+成长中心全任务）、Trae CN（每日签到+额度查询+防9074限流）、Qoder CN（每日 100 Credits）、MiniMax Code（7 日签到面板 + 客户端登录态自动读取）、豆包（签到领额度，当天成败都只跑一次）。基于底层 API 协议流与本地桌面凭据自动提取，零 pip 依赖（豆包解密复用 macOS 自带 openssl），通过 macOS launchd 实现免开软件界面、锁屏/合盖唤醒即补跑的全自动静默签到。
 ---
 
 # 🍎 macOS AI 助手每日自动签到 Skill (`mac-ai-auto-checkin`)
@@ -98,7 +98,7 @@ macOS 系统对钥匙串（Keychain Access）有严格的应用沙盒保护机�
 ## 七、 快速安装与部署
 
 ### 1. 一键安装
-**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险；当天无论成功失败只跑一次，可用 `DOUBAO_DISABLE=1` 完全停用。详见 README「MiniMax Code 与豆包」章节）。注意：会话被置为受限后，客户端内手工点「立即签到」同样会失败，需退出重登/重装客户端。MiniMax Code 会尝试续期 token，但 **CN 区 renewal 端点实测返回 401**，实际仍需靠客户端启动时刷新登录态；token 过期数天时先在客户端重新登录再签到。建议先预览：
+**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险；当天无论成功失败只跑一次，可用 `DOUBAO_DISABLE=1` 完全停用。详见 README「MiniMax Code 与豆包」章节）。注意：会话被置为受限后，客户端内手工点「立即签到」同样会失败，需退出重登/重装客户端。MiniMax Code 在 CN 区默认不发起 renewal（该端点属于国际区 JWT 协议，必然 401），直接读取客户端登录态；token 由客户端启动时自行刷新，过期时打开一次客户端即可。建议先预览：
 ```bash
 git clone https://github.com/RAyymask/mac-ai-auto-checkin.git
 cd mac-ai-auto-checkin

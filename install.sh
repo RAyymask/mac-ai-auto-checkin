@@ -115,6 +115,29 @@ PLIST_TMP="$TARGET_DIR/.launchagent.plist.new"
 sed -e "s|{{PYTHON_BIN}}|$PYTHON_BIN|g" \
     -e "s|{{TARGET_DIR}}|$TARGET_DIR|g" \
     "$TEMPLATE" > "$PLIST_TMP"
+
+# 保留用户已在本机 plist 上做的 EnvironmentVariables 定制（例如会话受限期间
+# 临时停用豆包的 DOUBAO_DISABLE=1）。重装不该把这些本地配置悄悄抹掉；
+# 模板里新加的同名键优先级更高，其余键原样合并。
+if [[ -f "$PLIST_DST" ]]; then
+  "$PYTHON_BIN" - "$PLIST_DST" "$PLIST_TMP" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        old = plistlib.load(f)
+    with open(sys.argv[2], 'rb') as f:
+        new = plistlib.load(f)
+except Exception:
+    sys.exit(0)
+env = old.get('EnvironmentVariables')
+if isinstance(env, dict) and env:
+    merged = dict(env)
+    merged.update(new.get('EnvironmentVariables') or {})
+    new['EnvironmentVariables'] = merged
+    with open(sys.argv[2], 'wb') as f:
+        plistlib.dump(new, f)
+PY
+fi
 plutil -lint "$PLIST_TMP" >/dev/null
 
 # 只比较影响调度的字段；RunAtLoad 仅在加载瞬间生效，不算差异
@@ -226,7 +249,7 @@ echo "  查看日志：tail -f ~/.auto-checkin/checkin.log"
 echo "  钥匙串首次授权（弹窗选「始终允许」）："
 echo "    Qoder: python3 ~/.auto-checkin/qoder_signin.py auto"
 echo "    豆包: python3 ~/.auto-checkin/doubao_checkin.py --dry-run"
-echo "  MiniMax 续期: python3 ~/.auto-checkin/minimax_checkin.py --renew"
+echo "  MiniMax 探测续期端点(CN 区预期 401): python3 ~/.auto-checkin/minimax_checkin.py --renew"
 echo "    （token 已过期数天时，请先在客户端重新登录一次再跑）"
 echo "  临时停用豆包: DOUBAO_DISABLE=1 ~/.auto-checkin/checkin"
 echo "  卸载：bash $REPO_DIR/uninstall.sh"

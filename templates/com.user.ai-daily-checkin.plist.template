@@ -4,6 +4,9 @@
 <dict>
     <key>Label</key>
     <string>com.user.ai-daily-checkin</string>
+    <!-- 安装后可在本文件加 <key>EnvironmentVariables</key> 做本机定制，
+         例如会话受限时 <key>DOUBAO_DISABLE</key><string>1</string> 停用豆包。
+         install.sh 会在重装时保留它；改完需 bootout + bootstrap 重新加载。 -->
     <key>ProgramArguments</key>
     <array>
         <string>{{PYTHON_BIN}}</string>
