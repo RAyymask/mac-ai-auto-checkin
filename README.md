@@ -180,6 +180,8 @@ CN 区桌面端是标准 OAuth2：`~/.minimax/auth/prod/cn/mcode-public/auth.jso
 
 **已落地修复（2026-11-13）**：CN 区默认不再发这个必然失败的 POST，直接用客户端 `auth.json` 的 `accessToken` 走 `status` → `claim`；国际区仍默认启用 renewal。开关：`MINIMAX_RENEW=1` 强制开启、`MINIMAX_RENEW=0` 强制关闭，`--renew` 显式探测，`--dry-run` 严格零写请求。签到本身从未受影响（本机实测 +400 积分正常）。
 
+> **2026-11-13 00:49 实跑复验**：`DOUBAO_DISABLE=1 ~/.auto-checkin/checkin --json` 返回 `ok:true` —— WorkBuddy +100（连签 17 天）、Trae +100（当前 5900）、Qoder 今日已领、MiniMax +400（第 2 天）、豆包 `SKIP 已停用（本轮不发送任何请求）`。单独跑 `minimax_checkin.py --json` 明确输出 `[MiniMax] 按 region 跳过 renewal`，复跑返回 `ALREADY / renewed:false`，且未生成 `.minimax_token.json`：确认 CN 区确实不再发续期 POST、签到幂等正常。
+
 **为什么不去「修好」CN 续期**：正确实现要拿 `refreshToken` 换 token，而它一次性轮换，必须同时原子回写客户端的 `auth.json`、`auth-state.json` 并同步 `generation` 与文件锁，否则桌面端会把自己的新 token 判成「已登出」、用户被迫重新扫码登录。为省一次客户端启动而去改写登录态，风险与收益完全不成比例。因此本项目**只读取、不接管**客户端的 OAuth 刷新。
 
 **token 过期怎么办**：打开一次 MiniMax Code 客户端（启动即刷新 `auth.json`），或设置 `MINIMAX_ACCESS_TOKEN` / `MINIMAX_USER_ID`。CN 区不需要跑 `--renew`（预期就是 401）。
