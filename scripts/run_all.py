@@ -166,11 +166,14 @@ DOUBAO_GUARD = BASE_DIR / ".doubao_done"
 
 
 def _doubao_done_today():
-    """豆包每天最多跑一次裸 HTTP 链路。
+    """豆包每天最多跑一次裸 HTTP 链路（**无论成功还是失败**）。
 
     LaunchAgent 一天触发三次；裸请求缺 a_bogus 签名，重复打接口有会话被
-    降权的风险（见 doubao_checkin.py 顶部说明）。当天已经成功/已签后直接收手，
-    连只读查询都不再发。DOUBAO_FORCE=1 可强制重跑。
+    降权的风险（见 doubao_checkin.py 顶部说明）。只要当天执行过就收手，
+    连只读查询都不再发 —— 失败时尤其要熔断，否则 710010702 这类错误
+    会被一天打三次，正好踩中上游实测的「会话被置为受限」路径。
+
+    DOUBAO_FORCE=1 可强制重跑；DOUBAO_DISABLE=1 可完全停用该平台。
     """
     if os.environ.get("DOUBAO_FORCE") == "1":
         return False
@@ -191,14 +194,30 @@ def _mark_doubao_done():
 
 def checkin_doubao():
     log("▶ [豆包] 开始执行签到...")
+    if os.environ.get("DOUBAO_DISABLE") == "1":
+        r = {"app": "Doubao", "status": proto.STATUS_SKIP, "result": "SKIP",
+             "msg": "已由 DOUBAO_DISABLE=1 停用（本轮不发送任何请求）"}
+        _report("豆包", r)
+        return r
     if _doubao_done_today():
         r = {"app": "Doubao", "status": proto.STATUS_ALREADY, "result": "ALREADY",
              "msg": "今日已处理，跳过（避免重复裸请求）；如需重跑设 DOUBAO_FORCE=1"}
         _report("豆包", r)
         return r
+    if not (BASE_DIR / "doubao_checkin.py").is_file():
+        # 没发出过任何请求，不必占用当天额度，方便修复后立即重试。
+        r = {"app": "Doubao", "status": proto.STATUS_SKIP, "result": "SKIP",
+             "msg": "未找到 doubao_checkin.py"}
+        _report("豆包", r)
+        return r
+
     r = _run("Doubao", "doubao_checkin.py", timeout=40)
-    if r["status"] in (proto.STATUS_OK, proto.STATUS_ALREADY):
-        _mark_doubao_done()
+    # 关键修复：只要脚本执行过就标记当天，无论成功、幂等、鉴权失败还是
+    # 710010702。旧实现只在 OK/ALREADY 时写标记，失败会让 launchd 一天
+    # 补跑三次，累积裸请求反而更容易触发会话降权。
+    _mark_doubao_done()
+    if r["status"] not in (proto.STATUS_OK, proto.STATUS_ALREADY):
+        log("  · 豆包本轮未成功，当天不再重试（避免累积裸请求）")
     _report("豆包", r)
     return r
 

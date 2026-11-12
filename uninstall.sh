@@ -61,10 +61,13 @@ cat <<'EOF'
 
 ⚠️  还需要你手动完成两件事（脚本无权、也不应替你修改系统授权）：
 
-  1. 撤销 Qoder 的钥匙串「始终允许」授权
-     安装时若点过「始终允许」，macOS 会为 python3 永久放行该项，卸载不会自动撤销。
-     打开「钥匙串访问」→ 登录 → 密码类 → 找到「Qoder CN App Safe Storage」
-     → 双击 → 访问控制 → 删除 python3 对应的条目，或改回「每次询问」。
+  1. 撤销 Qoder / 豆包的钥匙串「始终允许」授权
+     安装时若点过「始终允许」，macOS 会为 python3 / security 永久放行该项，卸载不会自动撤销。
+     打开「钥匙串访问」→ 登录 → 密码类，分别找到：
+       · Qoder CN App Safe Storage        （Qoder）
+       · Doubao Browser Safe Storage     （豆包，回退项 Doubao Safe Storage）
+     → 双击 → 访问控制 → 删除 python3 / security 对应的条目，或改回「每次询问」。
+     使用 --purge 时，~/.auto-checkin/.minimax_token.json 里的续期 token 会随目录一并删除。
 
   2. 检查后台项残留
      「系统设置 → 通用 → 登录项与扩展」里如有本项目的后台项，请手动移除。

@@ -11,6 +11,7 @@
 
 协议要点
   CN 域名  https://agent.minimaxi.com      国际域名 https://agent.minimax.io
+  续期     POST /v1/api/user/renewal  body {}  -> data.token（新 token）
   状态查询 GET  /minimax-cloud/api/v1/signin/status
   领取     POST /minimax-cloud/api/v1/signin/claim   body {}
   鉴权     Authorization: Bearer <accessToken>，query 里必须带 user_id=realUserID
@@ -18,15 +19,30 @@
   幂等     status 面板中 is_today && status==3 表示今日已领；
            claim 的 claim_result 1=新领取 2=今日已领
 
+为什么需要续期
+  客户端 auth.json 里 accessToken 是 60 字符的 opaque token（不是 JWT），
+  其 expiresAtMs 只有约 12 小时，且只在桌面端启动时刷新。桌面端每次启动
+  都会先调 /v1/api/user/renewal 用旧 token 换新 token（顺延约 40 天），
+  本项目把这一步搬进签到流程：先续期、再查状态、最后才决定是否领取。
+  续期得到的新 token **只写本项目目录的 .minimax_token.json（0600）**，
+  绝不回写客户端 auth.json，避免破坏 MiniMax Code 自己的登录态。
+
+  注意：续期要求「当前 token 仍有效」。若 token 已过期数天，续期会返回
+  401，此时必须在客户端重新登录一次（或设置 MINIMAX_ACCESS_TOKEN）来
+  重新点燃滚动链，之后每天自动续期即可长期免维护。
+
 凭据（零配置，按优先级）
   1. 环境变量 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID / MINIMAX_REGION
-  2. ~/.minimax/auth/prod/<region>/mcode-public/auth.json 的 records.*.accessToken
-  3. ~/Library/Application Support/MiniMax/minimax-agent-cn-config.json
-     的 sharedUser.realUserID
+  2. 本项目续期缓存 .minimax_token.json（7 天内有效）
+  3. ~/.minimax/auth/prod/<region>/mcode-public/auth.json 的 records.*.accessToken
+  realUserID 取自 ~/Library/Application Support/MiniMax/
+              minimax-agent-cn-config.json 的 sharedUser.realUserID
 
 用法
-  python3 minimax_checkin.py                # 查询状态，未签才领取
-  python3 minimax_checkin.py --dry-run      # 只查状态，绝不发写请求
+  python3 minimax_checkin.py                # 自动续期 + 查询状态，未签才领取
+  python3 minimax_checkin.py --renew        # 只续期并写缓存，不签到（重新登录后先跑它）
+  python3 minimax_checkin.py --dry-run      # 只查状态，不发任何写请求（含续期）
+  python3 minimax_checkin.py --no-renew     # 跳过续期，用于排查
   python3 minimax_checkin.py --json         # 结果同时以 JSON 打印
 """
 
@@ -51,7 +67,9 @@ except ImportError:  # 允许单独拷出来跑
 
 APP = "MiniMax"
 HOME = Path.home()
+BASE_DIR = Path(__file__).resolve().parent
 ORIGINS = {"cn": "https://agent.minimaxi.com", "en": "https://agent.minimax.io"}
+RENEW_PATH = "/v1/api/user/renewal"
 STATUS_PATH = "/minimax-cloud/api/v1/signin/status"
 CLAIM_PATH = "/minimax-cloud/api/v1/signin/claim"
 SIGNATURE_SALT = "I*7Cf%WZ#S&%1RlZJ&C2"
@@ -59,6 +77,9 @@ AUTH_ROOT = HOME / ".minimax" / "auth" / "prod"
 CLIENT_CONFIG = (HOME / "Library" / "Application Support" / "MiniMax" /
                  "minimax-agent-cn-config.json")
 APP_PLIST = Path("/Applications/MiniMax Code.app/Contents/Info.plist")
+# 续期 token 只落在本项目目录，绝不回写客户端 auth.json
+TOKEN_CACHE = BASE_DIR / ".minimax_token.json"
+CACHE_SOFT_TTL = 7 * 24 * 3600  # renewal 响应不含过期时间，7 天未续上就回落客户端文件
 
 # 官方 daily-signin.ts 的枚举
 DAY_UPCOMING, DAY_CLAIMABLE, DAY_CLAIMED, DAY_DISABLED = 1, 2, 3, 4
@@ -76,7 +97,7 @@ def finish(result, report, **extra):
         proto.emit(obj)
     else:
         print(json.dumps(obj, ensure_ascii=False))
-    return 0 if result in ("CLAIMED", "ALREADY", "DRY_RUN", "SKIP") else 1
+    return 0 if result in ("CLAIMED", "ALREADY", "DRY_RUN", "SKIP", "RENEWED") else 1
 
 
 # --------------------------------------------------------------------------
@@ -130,23 +151,97 @@ def read_auth_files(region):
     return best
 
 
-def load_credentials():
-    token = os.environ.get("MINIMAX_ACCESS_TOKEN", "").strip().strip('"').strip("'")
-    user_id = os.environ.get("MINIMAX_USER_ID", "").strip()
+def load_token_cache():
+    """读本项目续期缓存（0600）；损坏或超过软有效期返回 {}。绝不打印 token。"""
+    try:
+        data = json.loads(TOKEN_CACHE.read_text(encoding="utf-8"))
+        token = str(data.get("token") or "").strip()
+        updated = int(data.get("updated_at") or 0)
+    except Exception:
+        return {}
+    if not token or not updated or time.time() - updated > CACHE_SOFT_TTL:
+        return {}
+    return {"token": token,
+            "region": str(data.get("region") or "").strip(),
+            "user_id": str(data.get("user_id") or "").strip(),
+            "updated_at": updated}
+
+
+def save_token_cache(token, cred, source="renewal"):
+    """原子写入 0600 缓存。写失败不影响本轮签到：新 token 仍在内存中可用。"""
+    payload = {"token": token, "region": cred["region"],
+               "user_id": cred["user_id"], "updated_at": int(time.time()),
+               "source": source}
+    tmp = TOKEN_CACHE.with_name(TOKEN_CACHE.name + ".tmp")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(str(tmp), str(TOKEN_CACHE))
+        os.chmod(str(TOKEN_CACHE), 0o600)
+        return True
+    except Exception as exc:
+        log("续期缓存写入失败：%s" % type(exc).__name__)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def credential_candidates():
+    """按优先级返回去重后的凭据候选：环境变量 > 续期缓存 > 客户端 auth.json。
+
+    不做「expiresAtMs 已过期就丢弃」的硬拦截：那只是客户端的建议刷新时间，
+    而且续期接口本身就可能接受它；最终以服务端 401/403 为准。继续保留全部
+    候选，才能在「缓存里的旧 token 失效、客户端刚重新登录」时自动回退。
+    """
+    env_token = os.environ.get("MINIMAX_ACCESS_TOKEN", "").strip().strip('"').strip("'")
+    env_user = os.environ.get("MINIMAX_USER_ID", "").strip()
     region = os.environ.get("MINIMAX_REGION", "").strip().lower() or "cn"
-    exp = 0
-    if not token:
-        token, exp, found = read_auth_files(region)
-        if token:
-            region = found or region
-    cfg = read_client_config()
-    if not user_id:
-        shared = cfg.get("sharedUser") or {}
-        user = cfg.get("user") or {}
-        user_id = str(shared.get("realUserID") or user.get("realUserID") or "").strip()
     if region not in ORIGINS:
         region = "cn"
-    return {"token": token, "user_id": user_id, "region": region, "expires_at_ms": exp}
+
+    cfg = read_client_config()
+    shared = cfg.get("sharedUser") or {}
+    user = cfg.get("user") or {}
+    default_user = str(shared.get("realUserID") or user.get("realUserID") or "").strip()
+
+    out, seen = [], set()
+
+    def add(token, uid, reg, exp, source):
+        token = (token or "").strip()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        out.append({"token": token, "user_id": uid or env_user or default_user,
+                    "region": reg if reg in ORIGINS else region,
+                    "expires_at_ms": exp, "source": source})
+
+    if env_token:
+        add(env_token, env_user, region, 0, "env")
+    cache = load_token_cache()
+    if cache:
+        add(cache["token"], cache.get("user_id"), cache.get("region") or region,
+            0, "renewal-cache")
+    token, exp, found = read_auth_files(region)
+    if token:
+        add(token, env_user, found or region, exp, "client")
+
+    uid = env_user or default_user or (cache.get("user_id") if cache else "")
+    for c in out:
+        if not c["user_id"]:
+            c["user_id"] = uid
+    return out
+
+
+def load_credentials():
+    """兼容旧调用：返回首选凭据；无候选时返回空 token 的占位 dict。"""
+    cands = credential_candidates()
+    if cands:
+        return cands[0]
+    return {"token": "", "user_id": "", "region": "cn",
+            "expires_at_ms": 0, "source": ""}
 
 
 # --------------------------------------------------------------------------
@@ -202,6 +297,14 @@ def build_request(origin, path, cred, method, body_str=None):
         "x-timestamp": str(second),
         "x-signature": x_signature,
     }
+    if path == RENEW_PATH:
+        # /v1/api/user/renewal 属于桌面端登录 API，只认 `token:` 头；
+        # 沿用 signin 网关的 Authorization: Bearer 会被判
+        # 400「请求异常，请检查请求参数」。2026-11-12 在 agent.minimaxi.com
+        # 实测：换成 token 头后，同一个已过期凭据返回 401「登陆失败」，
+        # 说明请求形态已被接受，仅凭据本身失效。
+        del headers["Authorization"]
+        headers["token"] = cred["token"]
     url = "%s%s?%s" % (origin, path, query)
     return url, headers, (body_str.encode("utf-8") if body_str else None)
 
@@ -266,23 +369,105 @@ def streak_days(panel):
     return count
 
 
-def run(dry_run=False):
-    cred = load_credentials()
-    if not cred["token"]:
+def server_message(body):
+    """从网关响应里取服务端文案，只用于诊断，绝不输出凭据。"""
+    if not isinstance(body, dict):
+        return ""
+    for obj in (body.get("statusInfo"), body.get("base_resp")):
+        if isinstance(obj, dict):
+            msg = str(obj.get("msg") or obj.get("message") or obj.get("status_msg") or "")
+            if msg:
+                return msg[:80]
+    return ""
+
+
+def try_renew(cred):
+    """用旧 token 换新 token。返回 (新token, 失败原因)；每个候选恰好一次，绝不重试。"""
+    status, body, err = api_call(cred, RENEW_PATH, "POST", {}, timeout=20)
+    msg = server_message(body)
+    suffix = "「%s」" % msg if msg else ""
+    if status == 0:
+        return "", "网络异常：%s" % err
+    if status in (401, 403):
+        return "", "HTTP %d%s（token 已失效，需在客户端重新登录一次）" % (status, suffix)
+    if status != 200:
+        return "", "HTTP %d%s" % (status, suffix)
+    data = body if isinstance(body, dict) else {}
+    inner = data.get("data")
+    new_token = ""
+    if isinstance(inner, dict):
+        new_token = str(inner.get("token") or "").strip()
+    if not new_token:
+        new_token = str(data.get("token") or "").strip()
+    if not new_token:
+        base = data.get("base_resp") or {}
+        msg = str(base.get("status_msg") or "") if isinstance(base, dict) else ""
+        return "", "响应缺少 data.token%s" % ("（%s）" % msg if msg else "")
+    return new_token, ""
+
+
+def renew_one(cred):
+    """对单个凭据恰好续期一次，成功即写缓存。返回 (新凭据 or None, 失败原因)。
+
+    一次运行最多发一个 renewal POST：候选回退只走只读的 status 查询，
+    确认有效后写缓存让下一轮自动切换，避免无效写请求成倍增加。
+    """
+    new_token, why = try_renew(cred)
+    if new_token:
+        save_token_cache(new_token, cred)
+        log("续期成功（来源 %s），新 token 已写入本项目 0600 缓存" % cred["source"])
+        return dict(cred, token=new_token, expires_at_ms=0, source="renewal"), ""
+    return None, why
+
+
+def run(dry_run=False, renew_only=False, no_renew=False):
+    cands = credential_candidates()
+    if not cands:
         return finish("NO_AUTH", "未找到 MiniMax Code 登录态；请在客户端登录一次，"
                       "或设置 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID")
-    if not cred["user_id"]:
+    if not cands[0]["user_id"]:
         return finish("NO_AUTH", "缺少 realUserID（user_id），签到接口会误报 401；"
                       "请设置 MINIMAX_USER_ID 或登录客户端后重试")
-    if cred["expires_at_ms"] and cred["expires_at_ms"] < int(time.time() * 1000):
-        return finish("NO_AUTH", "accessToken 已过期；请在 MiniMax Code 客户端重新登录一次")
 
-    status, body, err = api_call(cred, STATUS_PATH, "GET", None)
+    # 1) 续期。--dry-run 严格不发任何写请求：renewal 是 POST，会改变服务端会话。
+    renewed, renew_note = None, ""
+    if not dry_run and not no_renew:
+        renewed, renew_note = renew_one(cands[0])
+        if renewed is None:
+            log("续期未成功（沿用现有 token，不重复尝试）：%s" % renew_note)
+
+    if renew_only:
+        if renewed:
+            return finish("RENEWED", "token 续期成功，已写入 0600 缓存；后续签到会自动滚动续期",
+                          token_source="renewal")
+        return finish("NO_AUTH", "token 续期失败：%s；请在 MiniMax Code 客户端重新登录一次"
+                      % (renew_note or "未尝试"))
+
+    active = renewed or cands[0]
+
+    # 2) 状态查询（只读）。首选 token 鉴权失败时用其它候选只读回查一次；
+    #    找到有效候选后写入缓存，下一轮就会以它为首选项重新点燃续期链。
+    #    续期已成功时不做回退，以免把刚拿到的新 token 覆盖掉。
+    status, body, err = api_call(active, STATUS_PATH, "GET", None)
+    if status in (401, 403) and renewed is None:
+        for c in cands[1:]:
+            if c["token"] == active["token"]:
+                continue
+            s2, b2, e2 = api_call(c, STATUS_PATH, "GET", None)
+            if s2 not in (401, 403):
+                status, body, err, active = s2, b2, e2, c
+                save_token_cache(c["token"], c, source="fallback:" + c["source"])
+                log("已切换到有效凭据（来源 %s）并写入缓存" % c["source"])
+                break
     if status == 0:
         return finish("ERROR", "网络异常：%s" % err)
     if status in (401, 403):
-        return finish("NO_AUTH", "鉴权失败 HTTP %d：token 失效或 user_id 不匹配；"
-                      "请重新登录 MiniMax Code 客户端" % status)
+        hint = ("；请在 MiniMax Code 客户端重新登录一次，再运行 "
+                "`minimax_checkin.py --renew` 点燃续期链")
+        if renew_note:
+            hint += "（本轮续期失败：%s）" % renew_note[:100]
+        return finish("NO_AUTH", "鉴权失败 HTTP %d：token 失效或 user_id 不匹配%s"
+                      % (status, hint), token_source=active["source"])
     if status != 200:
         return finish("ERROR", "状态查询失败 HTTP %d" % status)
     panel, why = unwrap(body)
@@ -299,7 +484,7 @@ def run(dry_run=False):
     if day_state == DAY_CLAIMED:
         return finish("ALREADY", "今日已签到（第 %s 天，+%s 积分）"
                       % (today.get("day_no"), points_today),
-                      streak_days=streak, points=points_today)
+                      streak_days=streak, points=points_today, renewed=bool(renewed))
     if dry_run:
         return finish("DRY_RUN", "空跑：今天可领（第 %s 天，+%s 积分），未发送领取请求"
                       % (today.get("day_no"), points_today),
@@ -309,7 +494,7 @@ def run(dry_run=False):
                       % day_state, streak_days=streak)
 
     # 只有面板明确「今天可领」才发唯一一次写请求，且绝不重试。
-    status, body, err = api_call(cred, CLAIM_PATH, "POST", {})
+    status, body, err = api_call(active, CLAIM_PATH, "POST", {})
     if status == 0:
         return finish("ERROR", "领取请求网络异常（不自动重试，避免重复领取）：%s" % err)
     if status in (401, 403):
@@ -323,21 +508,23 @@ def run(dry_run=False):
     points = data.get("points")
     if result_code == CLAIM_ALREADY:
         return finish("ALREADY", "今日已签到（服务端返回重复领取）",
-                      streak_days=streak, points=points)
+                      streak_days=streak, points=points, renewed=bool(renewed))
     if result_code == CLAIM_NEW:
         return finish("CLAIMED", "签到成功 +%s 积分（第 %s 天）"
                       % (points, data.get("day_no")),
-                      streak_days=streak, points=points)
+                      streak_days=streak, points=points, renewed=bool(renewed))
     return finish("ERROR", "领取返回未知 claim_result=%s（未重复发起）" % result_code)
 
 
 def main():
     ap = argparse.ArgumentParser(description="MiniMax Code 每日签到")
-    ap.add_argument("--dry-run", action="store_true", help="只查状态，不领取")
+    ap.add_argument("--renew", action="store_true", help="只续期 token 并写缓存，不签到")
+    ap.add_argument("--dry-run", action="store_true", help="只查状态，不发任何写请求（含续期）")
+    ap.add_argument("--no-renew", action="store_true", help="跳过自动续期，用于排查")
     ap.add_argument("--json", action="store_true", help="兼容参数：结果本就是结构化输出")
     args = ap.parse_args()
     try:
-        return run(dry_run=args.dry_run)
+        return run(dry_run=args.dry_run, renew_only=args.renew, no_renew=args.no_renew)
     except Exception as exc:
         return finish("ERROR", "未预期异常：%s: %s" % (type(exc).__name__, exc))
 

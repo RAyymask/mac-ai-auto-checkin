@@ -1,6 +1,6 @@
 ---
 name: mac-ai-auto-checkin
-description: macOS 专用的 AI 办公与编程助手每日自动签到与积分领取 Skill。支持 WorkBuddy（每日签到+成长中心全任务）、Trae CN（每日签到+额度查询+防9074限流）、Qoder CN（每日 100 Credits）、MiniMax Code（7 日签到面板）、豆包（签到领额度）。基于底层 API 协议流与本地桌面凭据自动提取，零外部依赖，通过 macOS launchd 实现免开软件界面、锁屏/合盖唤醒即补跑的全自动静默签到。
+description: macOS 专用的 AI 办公与编程助手每日自动签到与积分领取 Skill。支持 WorkBuddy（每日签到+成长中心全任务）、Trae CN（每日签到+额度查询+防9074限流）、Qoder CN（每日 100 Credits）、MiniMax Code（7 日签到面板 + 自动 token 续期）、豆包（签到领额度，当天成败都只跑一次）。基于底层 API 协议流与本地桌面凭据自动提取，零 pip 依赖（豆包解密复用 macOS 自带 openssl），通过 macOS launchd 实现免开软件界面、锁屏/合盖唤醒即补跑的全自动静默签到。
 ---
 
 # 🍎 macOS AI 助手每日自动签到 Skill (`mac-ai-auto-checkin`)
@@ -26,7 +26,7 @@ description: macOS 专用的 AI 办公与编程助手每日自动签到与积分
    * 架构支持：**Apple Silicon (M1/M2/M3/M4 系列)** 及 **Intel (x86_64)** 均原生完美支持。
 2. **Python 运行环境**：
    * **Python 3.8+**。
-   * **零第三方依赖**：纯 Python 标准库编写（内置离线纯 Python AES 解密与 macOS 原生加密调用），**无需** `pip install` 安装任何外部包（如 cryptography/requests 等）。
+   * **零 pip 依赖**：纯 Python 标准库编写；豆包 Cookie 的 AES-128-CBC 解密调用 macOS 自带的 `/usr/bin/openssl`，**无需** `pip install` 任何外部包（如 cryptography/requests/playwright）。
    * 可直接使用系统自带的 `/usr/bin/python3`，或 Homebrew 安装的 Python (`/opt/homebrew/bin/python3`)。
 3. **后台调度系统**：
    * 使用 macOS 原生系统级服务管理框架 **`launchd`**（免去安装青龙面板、Docker 或配置第三方守护程序的繁琐）。
@@ -98,7 +98,7 @@ macOS 系统对钥匙串（Keychain Access）有严格的应用沙盒保护机�
 ## 七、 快速安装与部署
 
 ### 1. 一键安装
-**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险，详见 README「MiniMax Code 与豆包」章节）。建议先预览：
+**默认安装会立即用你已登录的账号向五个平台发送签到请求**（豆包走未签名裸 HTTP 接口，有会话风控风险；当天无论成功失败只跑一次，可用 `DOUBAO_DISABLE=1` 完全停用。详见 README「MiniMax Code 与豆包」章节）。MiniMax Code 会先自动续期 token，token 过期数天时需先在客户端重新登录再跑 `--renew`。建议先预览：
 ```bash
 git clone https://github.com/RAyymask/mac-ai-auto-checkin.git
 cd mac-ai-auto-checkin

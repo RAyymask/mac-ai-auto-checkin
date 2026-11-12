@@ -88,11 +88,16 @@ def collect():
     except Exception as exc:
         items.append(rec("目录权限", False, "读取失败：%s" % exc))
 
-    cache = BASE / ".trae_token_cache.json"
-    if cache.exists():
+    # 只检查权限，不读取内容：Trae 的 refreshToken 与 MiniMax 续期得到的
+    # accessToken 都属于明文凭据，必须是 0600。
+    for cache_name in (".trae_token_cache.json", ".minimax_token.json"):
+        cache = BASE / cache_name
+        if not cache.exists():
+            continue
         mode = cache.stat().st_mode & 0o777
         ok = (mode & 0o077) == 0
-        items.append(rec("凭据缓存权限", ok, ".trae_token_cache.json 为 %o（内容不读取）" % mode,
+        items.append(rec("凭据缓存权限 " + cache_name, ok,
+                         "%s 为 %o（内容不读取）" % (cache_name, mode),
                          "chmod 600 %s" % cache if not ok else ""))
 
     # 新增两个平台的凭据链路静态检查：只看文件是否存在 / 工具是否可用，
