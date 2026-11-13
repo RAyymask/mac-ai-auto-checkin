@@ -157,7 +157,9 @@ def checkin_qoder():
 
 def checkin_minimax():
     log("▶ [MiniMax Code] 开始执行签到...")
-    r = _run("MiniMax", "minimax_checkin.py", timeout=30)
+    # CN 区 token 过期时脚本会自行启动客户端并等待 auth.json 刷新（最多约 30 秒），
+    # 因此超时必须比「启动 + status/claim 网络往返」更宽裕。
+    r = _run("MiniMax", "minimax_checkin.py", timeout=90)
     _report("MiniMax Code", r)
     return r
 

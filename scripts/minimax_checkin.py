@@ -39,6 +39,19 @@
   renewal；MINIMAX_RENEW=1/0 可强制覆盖，--renew 用于显式探测。
   续期成功得到的新 token 只写 .minimax_token.json（0600），绝不回写客户端。
 
+自动保持登录态（2026-11-13 新增）
+  CN 区签到前读 auth.json 的 expiresAtMs：剩余不足 3 小时或已过期时，
+  自行执行 /usr/bin/open -a "MiniMax Code" 启动客户端，轮询最多 20 秒等它
+  刷新 auth.json，再重新读凭据签到。每天 10:05 那轮自动启动一次即可覆盖
+  当天 10:05 / 15:05 / 20:05 三轮，不会再出现下午 401。
+  * 只启动、不 quit / 重启正在运行的客户端，绝不改写客户端登录态。
+  * --dry-run 与 --renew 保持零副作用，不启动客户端。
+  * env 注入凭据 / 国际区 renewal 缓存为首选时不启动（不需要 GUI）。
+  * MINIMAX_NO_LAUNCH=1 完全停用；MINIMAX_LAUNCH_MARGIN_MIN 调阈值
+    （默认 180 分钟，仅用于排查）。
+  * 客户端本就已运行且未刷新时，20 秒后记日志并沿用旧 token 继续签到，
+    不会为了刷新而杀掉用户正在使用的客户端。
+
 凭据（零配置，按优先级）
   1. 环境变量 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID / MINIMAX_REGION
   2. 本项目续期缓存 .minimax_token.json（7 天内有效）
@@ -52,6 +65,7 @@
   python3 minimax_checkin.py --dry-run      # 只查状态，不发任何写请求（含续期）
   python3 minimax_checkin.py --no-renew     # 跳过续期（CN 区默认已是跳过）
   MINIMAX_RENEW=1 python3 minimax_checkin.py   # 强制启用 renewal（国际区默认开启）
+  MINIMAX_NO_LAUNCH=1 python3 minimax_checkin.py  # 不自动启动客户端
   python3 minimax_checkin.py --json         # 结果同时以 JSON 打印
 """
 
@@ -61,6 +75,7 @@ import json
 import os
 import plistlib
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -86,6 +101,15 @@ AUTH_ROOT = HOME / ".minimax" / "auth" / "prod"
 CLIENT_CONFIG = (HOME / "Library" / "Application Support" / "MiniMax" /
                  "minimax-agent-cn-config.json")
 APP_PLIST = Path("/Applications/MiniMax Code.app/Contents/Info.plist")
+CLIENT_APP_NAME = "MiniMax Code"
+# 客户端启动时自行刷新 auth.json（约 12 小时有效期）；剩余不足该阈值就
+# 在签到前主动启动一次，保证当天 10:05/15:05/20:05 三轮都拿到有效 token。
+# 用 /usr/bin/open 绝对路径，避免 launchd 的精简 PATH 找不到命令。
+LAUNCH_MARGIN_MIN_DEFAULT = 180
+LAUNCH_WAIT_SEC = 20       # 实测启动后约 2 秒落盘，20 秒足够
+LAUNCH_POLL_SEC = 2
+# 本轮是否真的启动并刷新了客户端；用于把结果带进 report / JSON 便于诊断
+LAUNCH_CONTEXT = {"refreshed": False, "note": ""}
 # 续期 token 只落在本项目目录，绝不回写客户端 auth.json
 TOKEN_CACHE = BASE_DIR / ".minimax_token.json"
 CACHE_SOFT_TTL = 7 * 24 * 3600  # renewal 响应不含过期时间，7 天未续上就回落客户端文件
@@ -100,7 +124,11 @@ def log(msg):
 
 
 def finish(result, report, **extra):
-    obj = {"app": APP, "result": result, "report": report}
+    if LAUNCH_CONTEXT["refreshed"]:
+        # 让「本轮自动启动了客户端」出现在 checkin.log 的日报里，便于事后核对
+        report = "%s（%s）" % (report, LAUNCH_CONTEXT["note"])
+    obj = {"app": APP, "result": result, "report": report,
+           "client_launched": LAUNCH_CONTEXT["refreshed"]}
     obj.update(extra)
     if proto is not None:
         proto.emit(obj)
@@ -251,6 +279,73 @@ def load_credentials():
         return cands[0]
     return {"token": "", "user_id": "", "region": "cn",
             "expires_at_ms": 0, "source": ""}
+
+
+def _launch_margin_ms():
+    """允许用环境变量调整阈值，便于排查与本地验证。"""
+    raw = os.environ.get("MINIMAX_LAUNCH_MARGIN_MIN", "").strip()
+    try:
+        minutes = int(raw) if raw else LAUNCH_MARGIN_MIN_DEFAULT
+    except ValueError:
+        minutes = LAUNCH_MARGIN_MIN_DEFAULT
+    return max(0, minutes) * 60 * 1000
+
+
+def _launch_disabled():
+    return os.environ.get("MINIMAX_NO_LAUNCH", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def ensure_client_fresh(region):
+    """签到前保证 CN 客户端 token 新鲜：必要时自行启动客户端刷新 auth.json。
+
+    返回 (是否观察到刷新, 说明)。绝不 quit / 重启正在运行的客户端，也绝不
+    改写客户端登录态文件；启动失败只记日志，签到照常进行，由服务端判定。
+    """
+    if _launch_disabled():
+        return False, "MINIMAX_NO_LAUNCH=1，跳过自动启动客户端"
+    _, before_exp, _ = read_auth_files(region)
+    if not before_exp:
+        return False, "auth.json 无 expiresAtMs，不擅自启动客户端"
+    remaining = before_exp - int(time.time() * 1000)
+    if remaining >= _launch_margin_ms():
+        return False, "token 剩余约 %d 分钟，无需启动客户端" % (remaining // 60000)
+
+    try:
+        proc = subprocess.run(["/usr/bin/open", "-a", CLIENT_APP_NAME],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=10)
+    except Exception as exc:
+        return False, "启动客户端失败：%s: %s" % (type(exc).__name__, exc)
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:120]
+        return False, "启动客户端失败：open 返回 %d%s" % (
+            proc.returncode, "（%s）" % err if err else "")
+
+    deadline = time.time() + LAUNCH_WAIT_SEC
+    while time.time() < deadline:
+        time.sleep(LAUNCH_POLL_SEC)
+        _, new_exp, _ = read_auth_files(region)
+        if new_exp > before_exp:
+            # 缓存里可能存着上一轮 renewal/fallback 的旧 token，优先级高于
+            # 客户端文件；刷新成功后删掉它，避免继续拿旧 token 去撞 401。
+            # 只删本项目自己的缓存，绝不碰客户端 auth.json。
+            try:
+                TOKEN_CACHE.unlink()
+            except OSError:
+                pass
+            return True, ("已自行启动 MiniMax Code，auth.json 刷新至 %s"
+                          % time.strftime("%Y-%m-%d %H:%M",
+                                          time.localtime(new_exp / 1000)))
+    # 未见文件变化要分两种：客户端认为 token 仍有效、压根不需要刷新；
+    # 或是 token 确实已过期但没能刷新（客户端已运行 / 登录态失效）。
+    left_ms = before_exp - int(time.time() * 1000)
+    if left_ms > 0:
+        return False, ("客户端已启动，token 仍有效（剩余约 %d 分钟），"
+                       "auth.json 无需刷新" % (left_ms // 60000))
+    return False, ("客户端已启动，但 %d 秒内未刷新已过期的 auth.json"
+                   "（客户端可能本就已运行，激活不会触发启动刷新）；沿用现有 token"
+                   % LAUNCH_WAIT_SEC)
 
 
 # --------------------------------------------------------------------------
@@ -455,6 +550,22 @@ def run(dry_run=False, renew_only=False, no_renew=False):
         return finish("NO_AUTH", "缺少 realUserID（user_id），签到接口会误报 401；"
                       "请设置 MINIMAX_USER_ID 或登录客户端后重试")
 
+    # 0) CN 区签到前自行保证客户端 token 新鲜：剩余有效期不足阈值就启动
+    #    一次 MiniMax Code，等它把 auth.json 刷新后再读凭据。只在所有凭据
+    #    都来自客户端文件时才启动（env 注入 / 国际区缓存不需要 GUI）。
+    #    --dry-run 与 --renew 保持零副作用，绝不启动客户端。
+    if (not dry_run and not renew_only and cands[0]["region"] == "cn"
+            and all(c["source"] == "client" for c in cands)):
+        refreshed, launch_note = ensure_client_fresh(cands[0]["region"])
+        LAUNCH_CONTEXT["refreshed"] = refreshed
+        LAUNCH_CONTEXT["note"] = launch_note
+        log("自动登录态检查：%s" % launch_note)
+        if refreshed:
+            cands = credential_candidates()
+            if not cands or not cands[0]["user_id"]:
+                return finish("NO_AUTH", "客户端刷新后凭据读取失败；"
+                              "请在 MiniMax Code 客户端重新登录一次")
+
     # 1) 续期。--dry-run 严格不发任何写请求：renewal 是 POST，会改变服务端会话。
     #    CN 区默认跳过：该端点属国际区 JWT 协议，发过去必然 401，只是噪声。
     renewed, renew_note = None, ""
@@ -493,8 +604,8 @@ def run(dry_run=False, renew_only=False, no_renew=False):
     if status == 0:
         return finish("ERROR", "网络异常：%s" % err)
     if status in (401, 403):
-        hint = ("；请打开 MiniMax Code 客户端让它刷新 auth.json，"
-                "或设置 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID")
+        hint = ("；脚本已按需自动启动客户端，若仍失败请在 MiniMax Code 里"
+                "重新登录一次，或设置 MINIMAX_ACCESS_TOKEN / MINIMAX_USER_ID")
         if renew_note:
             hint += "（本轮续期失败：%s）" % renew_note[:100]
         return finish("NO_AUTH", "鉴权失败 HTTP %d：token 失效或 user_id 不匹配%s"
