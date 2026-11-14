@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.ai-daily-checkin.catchup</string>
+    <!-- 开机补签专用：只在 launchd 加载本服务的瞬间运行一次，没有日历排程。
+         launchd 的 StartCalendarInterval 对关机期间错过的轮次不会补跑，
+         这个服务负责在每次登录时检查「当天是否已跑过完整一轮」，缺则补跑。
+         catchup.py 会继承下面的 EnvironmentVariables，因此 DOUBAO_DISABLE=1
+         之类的本机停用配置同样生效；install.sh 重装时会从主服务 plist 合并过来。 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{PYTHON_BIN}}</string>
+        <string>{{TARGET_DIR}}/catchup.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{{TARGET_DIR}}/launchd.catchup.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{TARGET_DIR}}/launchd.catchup.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

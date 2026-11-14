@@ -12,9 +12,9 @@
         <string>{{PYTHON_BIN}}</string>
         <string>{{TARGET_DIR}}/run_all.py</string>
     </array>
-    <!-- 不使用 RunAtLoad：install.sh 会同步试跑一次，两者叠加会重复发签到请求；
-         开机立即执行也容易撞上网络尚未就绪。每天三次的 StartCalendarInterval
-         配合 launchd 唤醒补偿已足够。 -->
+    <!-- 本服务不设 RunAtLoad：install.sh 会同步试跑一次，叠加会重复发请求。
+         关机期间错过的排程由独立的 com.user.ai-daily-checkin.catchup
+         （RunAtLoad）在登录后补跑；本服务只负责 10:05 / 15:05 / 20:05。 -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>

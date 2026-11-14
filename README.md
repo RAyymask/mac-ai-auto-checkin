@@ -40,7 +40,7 @@
 * ⚡ **纯静默 API 协议流**：无需启动客户端界面，电脑不闪烁。
 * 🪶 **零 pip 依赖**：纯 Python 标准库，无需 `pip install`；豆包的 Cookie 解密调用 macOS 自带的 `/usr/bin/openssl`，不装 Playwright、不装浏览器。
 * 🔒 **凭据只在本地使用**：读取本机已登录 Session，不上传任何凭据，不设内置密钥；落盘的缓存文件以 `0600` 保存。
-* ⏰ **launchd 原生排程**：每天 10:05 / 15:05 / 20:05 静默执行，锁屏照常跑；休眠期间错过的时间点，唤醒后由 launchd 补偿补跑。
+* ⏰ **双 LaunchAgent 排程**：日历服务每天 10:05 / 15:05 / 20:05 静默执行；独立的「开机补签」服务在每次登录后检查当天是否已签到，缺则补跑 —— **关机期间错过的轮次不再漏签**（2026-11-14 实测修复）。
 * 🛡️ **风控感知**：每个平台都先查状态再决定是否领取；豆包额外限制「每天最多一轮、写请求恰好一次」，详见下方专章。
 
 ---
@@ -84,7 +84,7 @@ bash install.sh --dry-run
 bash install.sh
 ```
 
-`install.sh` 会依次完成：**部署脚本** → **生成并注册 LaunchAgent** → **立即试跑一次**（这一步会向五个平台发网络请求）。
+`install.sh` 会依次完成：**部署脚本** → **生成并注册日历 LaunchAgent** → **立即试跑一次**（这一步会向五个平台发网络请求）→ **注册开机补签 LaunchAgent**。两个服务的分工见下一节。
 
 > 首次安装建议先跑两个新平台的 `--dry-run`（只读、不领取），确认凭据与签名都通了再执行默认安装；豆包尤其不建议在状态不明时反复重跑。
 
@@ -100,12 +100,27 @@ bash install.sh
 
 退出码：`0` 全部成功，`1` 服务注册失败，`2` 试跑有失败项。注册失败时脚本会打印针对性诊断，并继续完成自检与试跑，**不会假装成功**。
 
-> 去掉了 plist 里的 `RunAtLoad`：原先「注册成功瞬间后台跑一次」与「install.sh 同步跑一次」叠加，会在一次安装里发两轮签到请求。现在只在安装时同步试跑一次，之后完全交给每天三个时间点。
+### 🔁 开机补签：关机也不会漏签
+
+`launchd` 的 `StartCalendarInterval` **只在系统运行时触发**；关机期间错过的 10:05 / 15:05 / 20:05 不会被补跑。2026-11-14 实测：11-13 23:41 关机、11-14 15:32 才登录，当天前两轮全部漏掉，直到人工补跑才签到。
+
+为此项目注册 **两个** LaunchAgent：
+
+| 服务 | 触发方式 | 作用 |
+| :--- | :--- | :--- |
+| `com.user.ai-daily-checkin` | 每天 10:05 / 15:05 / 20:05 | 常规静默签到（**不设 `RunAtLoad`**） |
+| `com.user.ai-daily-checkin.catchup` | 仅在 launchd 加载瞬间（`RunAtLoad`） | 登录后检查当天是否已有一轮完整签到，缺则补跑 |
+
+为什么是两个服务：同一个 plist 的 `ProgramArguments` 无法区分「加载触发」与「日历触发」。若把「当天已签就跳过」的守卫塞进 `run_all.py`，每天后两轮会被误判成重复而跳过，反而丢掉补签机会。
+
+`catchup.py` 的流程：**等网络就绪**（默认最多 30 秒，`AUTO_CHECKIN_CATCHUP_NETWORK_WAIT=0` 可跳过）→ 读 `checkin.log` 统计当天「启动标记 → 结束分隔符」的完整轮次 → 已有则写一行日志、零请求退出，否则调用 `run_all.py`。半途崩溃的轮次没有结束分隔符，不会被误判成已完成。它**继承主服务 plist 的 `EnvironmentVariables`**，所以 `DOUBAO_DISABLE=1` 之类的本机停用配置同样生效。
+
+安装顺序也刻意安排过：先同步试跑写好当天日志，再注册补签服务，这样 `RunAtLoad` 触发时会直接跳过，**一次安装不会发两轮请求**；`--no-run` 则只写入补签 plist、不注册，避免「说好不试跑、结果加载瞬间反而跑了一轮」。可用 `python3 ~/.auto-checkin/catchup.py --dry-run` 零请求预览它会做什么，`--force` 可强制补跑。
 
 ### 其他选项
 
 ```bash
-bash install.sh --no-run    # 部署 + 注册，但不立即试跑
+bash install.sh --no-run    # 部署 + 注册日历服务，不立即试跑；补签 plist 只写入不注册
 bash install.sh --check     # 离线自检（doctor），不联网、不读取凭据内容
 bash install.sh --help
 ```
@@ -218,10 +233,15 @@ CN 区桌面端是标准 OAuth2：`~/.minimax/auth/prod/cn/mcode-public/auth.jso
 | 查看日志 | `tail -n 25 ~/.auto-checkin/checkin.log` |
 | 查看 launchd 输出 | `tail -f ~/.auto-checkin/launchd.out.log` |
 | 查看服务状态 | `launchctl print gui/$(id -u)/com.user.ai-daily-checkin` |
+| 查看开机补签服务状态 | `launchctl print gui/$(id -u)/com.user.ai-daily-checkin.catchup` |
+| 预览开机补签会做什么（零请求） | `python3 ~/.auto-checkin/catchup.py --dry-run` |
+| 手动补跑一轮（绕过当天守卫） | `python3 ~/.auto-checkin/catchup.py --force` |
+| 查看开机补签日志 | `tail -f ~/.auto-checkin/launchd.catchup.log` |
+| 手动注册开机补签服务 | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.ai-daily-checkin.catchup.plist` |
 | 卸载（保留脚本与日志） | `bash uninstall.sh` |
 | 彻底卸载（删除目录，不可恢复） | `bash uninstall.sh --purge` |
 
-`doctor` 逐项检查 Python 版本、五个客户端是否安装、9 个脚本的完整性与语法、目录与凭据缓存权限（含 MiniMax 续期缓存，存在时才检查）、`openssl` 是否可用、豆包 Cookie 库与 MiniMax `auth.json` 是否就位、LaunchAgent plist 与定时服务注册状态、日志体积，并给出修复命令。它**不联网**，也**不会读取或打印任何凭据内容**。
+`doctor` 逐项检查 Python 版本、五个客户端是否安装、10 个脚本的完整性与语法、目录与凭据缓存权限（含 MiniMax 续期缓存，存在时才检查）、`openssl` 是否可用、豆包 Cookie 库与 MiniMax `auth.json` 是否就位、**两个 LaunchAgent** 的配置与注册状态（含补签服务是否继承 `EnvironmentVariables`）、日志体积，并给出修复命令。它**不联网**，也**不会读取或打印任何凭据内容**。
 
 ---
 
@@ -268,6 +288,22 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 3. **macOS 13+ 后台项批准**：检查「系统设置 → 通用 → 登录项与扩展」中是否有待批准项。
 4. **文件其实已经就位**：plist 位于 `~/Library/LaunchAgents` 且未被禁用时，**重新登录 macOS 后 launchd 通常会自动加载它**。手动注册只是让本次会话立刻生效。
 5. 用 `bash install.sh --check` 确认到底是「文件没部署」还是「服务没注册」。
+
+</details>
+
+<details>
+<summary>关机后当天没签到 / 开机补签服务未注册</summary>
+
+* 关机期间 `StartCalendarInterval` 不会补跑，这是 `launchd` 的既定行为，不是脚本故障。
+* 先确认补签服务在册：`launchctl print gui/$(id -u)/com.user.ai-daily-checkin.catchup`。若提示找不到服务，在**图形界面的「终端」**里注册（助手沙盒会返回 EIO）：
+
+  ```bash
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.ai-daily-checkin.catchup.plist
+  ```
+
+  或者**重新登录一次 macOS**，launchd 通常会自动加载 `~/Library/LaunchAgents` 下的 plist。
+* 用 `python3 ~/.auto-checkin/catchup.py --dry-run` 零请求预览它的判断；想立刻补一轮用 `~/.auto-checkin/checkin`（各平台幂等）或 `python3 ~/.auto-checkin/catchup.py --force`。
+* 补签服务必须继承主 plist 的 `EnvironmentVariables`；`install.sh` 重装时会自动合并。若手工改了主 plist 的 `DOUBAO_DISABLE`，记得重跑一次 `bash install.sh --no-run` 让补签 plist 同步。
 
 </details>
 
@@ -320,8 +356,9 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 
 ## 💤 熄屏、锁屏与合盖唤醒机制
 
-* **锁屏 / 仅屏幕熄灭**：网络正常，脚本在 10:05 / 15:05 / 20:05 静默完成签到。
-* **合盖 / 深度休眠**：休眠期间 CPU 暂停。借助 `launchd` 对 `StartCalendarInterval` 的排程补偿，唤醒后错过的时间点会被补跑。
+* **锁屏 / 仅屏幕熄灭**：网络正常，日历服务在 10:05 / 15:05 / 20:05 静默完成签到。
+* **合盖 / 深度休眠**：休眠期间 CPU 暂停；`launchd` 对 `StartCalendarInterval` 有唤醒补偿，唤醒后可能补跑错过的时间点，但**不保证每次**。
+* **关机 / 重启**：**关机期间错过的排程 launchd 完全不会补跑**（2026-11-14 实测两轮全漏）。此时由 `RunAtLoad` 的开机补签服务在登录后检查当天日志，缺则补跑一轮，详见「开机补签」一节。
 * **幂等**：所有平台都先回查状态，已签到直接跳过、不会重复领取；豆包额外有本地 `.doubao_done` 守卫，launchd 一天三次补跑也只发一轮请求，避免累积裸请求触发风控。
 
 ---
@@ -337,7 +374,7 @@ python3 ~/.auto-checkin/doubao_checkin.py --dry-run
 
 > 以上为示例文本，积分/额度数值来自服务端实时返回，会随官方活动调整。
 
-`checkin.log` 超过 1 MB 会自动轮转成 `checkin.log.1`。`launchd.out.log` / `launchd.err.log` 由 launchd 直接写入，无法在脚本内安全轮转，`doctor` 会在它们超过 1 MB 时提示手动清理。
+`checkin.log` 超过 1 MB 会自动轮转成 `checkin.log.1`。`launchd.out.log` / `launchd.err.log` / `launchd.catchup.log` 由 launchd 直接写入，无法在脚本内安全轮转，`doctor` 会在主日志超过 1 MB 时提示手动清理；`catchup.py` 自己的判断与结果也会写进 `checkin.log`，前缀 `[Catchup]`。
 
 ---
 

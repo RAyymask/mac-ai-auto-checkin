@@ -18,9 +18,11 @@ import sys
 from pathlib import Path
 
 LABEL = "com.user.ai-daily-checkin"
+CATCHUP_LABEL = "com.user.ai-daily-checkin.catchup"
 BASE = Path(os.environ.get("AUTO_CHECKIN_DIR") or Path(__file__).resolve().parent).resolve()
 HOME = Path.home()
 PLIST = HOME / "Library" / "LaunchAgents" / (LABEL + ".plist")
+CATCHUP_PLIST = HOME / "Library" / "LaunchAgents" / (CATCHUP_LABEL + ".plist")
 LOG = BASE / "checkin.log"
 
 CLIENTS = (
@@ -32,16 +34,16 @@ CLIENTS = (
 )
 SCRIPTS = ("checkin_protocol.py", "run_all.py", "signin.py", "trae_get_token.py",
            "trae_checkin.py", "qoder_signin.py", "minimax_checkin.py",
-           "doubao_checkin.py", "doctor.py")
+           "doubao_checkin.py", "catchup.py", "doctor.py")
 
 
 def rec(name, ok, detail, fix=""):
     return {"name": name, "ok": bool(ok), "detail": detail, "fix": fix}
 
 
-def service_loaded():
+def service_loaded(label=LABEL):
     try:
-        r = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), LABEL)],
+        r = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)],
                            capture_output=True, text=True, timeout=5)
         return r.returncode == 0
     except Exception:
@@ -148,6 +150,35 @@ def collect():
                      "手动注册：launchctl bootstrap gui/$(id -u) %s\n"
                      "或重新登录 macOS：launchd 会自动加载 ~/Library/LaunchAgents 下的 plist\n"
                      "若仍失败，检查「系统设置 → 通用 → 登录项与扩展」是否待批准" % PLIST))
+
+    # 开机补签是第二个 LaunchAgent：只在 RunAtLoad 时跑一次，且必须继承主服务
+    # 的 EnvironmentVariables（例如 DOUBAO_DISABLE=1），否则会绕过本机停用配置。
+    if not CATCHUP_PLIST.exists():
+        items.append(rec("开机补签服务", False, "%s 不存在" % CATCHUP_PLIST,
+                         "重新运行 install.sh"))
+    else:
+        try:
+            with open(CATCHUP_PLIST, "rb") as f:
+                cdata = plistlib.load(f)
+            run_at_load = bool(cdata.get("RunAtLoad", False))
+            has_calendar = bool(cdata.get("StartCalendarInterval"))
+            env_obj = cdata.get("EnvironmentVariables") or {}
+            env_names = sorted(env_obj.keys()) if isinstance(env_obj, dict) else []
+            cfg_ok = (cdata.get("Label") == CATCHUP_LABEL and run_at_load
+                      and not has_calendar and (BASE / "catchup.py").is_file())
+            c_loaded = service_loaded(CATCHUP_LABEL)
+            detail = ("RunAtLoad=%s；日历排程=%s；继承环境变量=%s；服务=%s"
+                      % (run_at_load, "有" if has_calendar else "无",
+                         "、".join(env_names) or "无",
+                         "已注册" if c_loaded else "未注册"))
+            items.append(rec("开机补签服务", cfg_ok and c_loaded, detail,
+                             "" if (cfg_ok and c_loaded) else
+                             ("重新运行 install.sh" if not cfg_ok else
+                              "手动注册：launchctl bootstrap gui/$(id -u) %s\n"
+                              "或重新登录 macOS 让 launchd 自动加载" % CATCHUP_PLIST)))
+        except Exception as exc:
+            items.append(rec("开机补签服务", False, "plist 解析失败：%s" % exc,
+                             "重新运行 install.sh"))
 
     if LOG.exists():
         lines = [x for x in LOG.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]

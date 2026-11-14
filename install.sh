@@ -6,19 +6,23 @@ set -euo pipefail
 umask 077
 
 LABEL="com.user.ai-daily-checkin"
+CATCHUP_LABEL="com.user.ai-daily-checkin.catchup"
 TARGET_DIR="$HOME/.auto-checkin"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
+CATCHUP_DST="$HOME/Library/LaunchAgents/$CATCHUP_LABEL.plist"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UID_NUM="$(id -u)"
 TEMPLATE="$REPO_DIR/templates/$LABEL.plist.template"
+CATCHUP_TEMPLATE="$REPO_DIR/templates/$CATCHUP_LABEL.plist.template"
 
 usage() {
   cat <<EOF
 用法：bash install.sh [选项]
 
-  （无参数）   部署脚本 + 注册 launchd 定时服务 + 立即试跑一次
+  （无参数）   部署脚本 + 注册日历定时服务与开机补签服务 + 立即试跑一次
   --dry-run    只预览将要做什么，不写文件、不注册、不发送任何网络请求
-  --no-run     部署并注册，但不立即试跑
+  --no-run     部署并注册日历服务，不立即试跑；开机补签服务的 plist 只写入不注册
+               （避免 RunAtLoad 在加载瞬间反而触发一次签到）
   --check      运行离线自检（doctor），不联网、不读取凭据内容
   -h, --help   显示本帮助
 
@@ -65,10 +69,14 @@ if [[ "$MODE" == "dry" ]]; then
   echo "Python：$PYTHON_BIN ($PY_VERSION)"
   echo "将部署：$REPO_DIR/scripts/*.py -> $TARGET_DIR （目录 700，文件 600）"
   echo "将生成：$PLIST_DST"
+  echo "将生成：${CATCHUP_DST}（开机补签，RunAtLoad）"
   echo "将注册：launchctl bootstrap gui/$UID_NUM $PLIST_DST"
+  echo "将注册：launchctl bootstrap gui/$UID_NUM $CATCHUP_DST"
   echo "将试跑：$PYTHON_BIN $TARGET_DIR/run_all.py （会向五个平台发送签到请求）"
-  echo "-------- 生成的 plist 预览 --------"
+  echo "-------- 日历服务 plist 预览 --------"
   sed -e "s|{{PYTHON_BIN}}|$PYTHON_BIN|g" -e "s|{{TARGET_DIR}}|$TARGET_DIR|g" "$TEMPLATE"
+  echo "-------- 开机补签 plist 预览 --------"
+  sed -e "s|{{PYTHON_BIN}}|$PYTHON_BIN|g" -e "s|{{TARGET_DIR}}|$TARGET_DIR|g" "$CATCHUP_TEMPLATE"
   echo "-------------------------------------------------------------"
   echo "未创建文件、未注册服务、未发送任何网络请求。"
   exit 0
@@ -189,6 +197,59 @@ else
   fi
 fi
 
+# ---- 开机补签服务：先只生成 plist，注册放到试跑之后 ----------------------
+# 同一 plist 无法区分 RunAtLoad 与日历触发，所以用第二个 LaunchAgent 承载。
+# 顺序很关键：让默认安装的显式试跑先完成并写入当天日志，这样 bootstrap 瞬间
+# 触发的 catchup.py 会看到「今日已有完整轮次」而跳过，不会出现两次签到。
+CATCHUP_TMP="$TARGET_DIR/.launchagent.catchup.plist.new"
+CATCHUP_OK=0
+sed -e "s|{{PYTHON_BIN}}|$PYTHON_BIN|g" \
+    -e "s|{{TARGET_DIR}}|$TARGET_DIR|g" \
+    "$CATCHUP_TEMPLATE" > "$CATCHUP_TMP"
+
+# 继承主服务 plist 上的本机定制（例如 DOUBAO_DISABLE=1），确保开机补签
+# 不会绕过用户显式停用的平台。
+"$PYTHON_BIN" - "$PLIST_DST" "$CATCHUP_TMP" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        main = plistlib.load(f)
+    with open(sys.argv[2], 'rb') as f:
+        new = plistlib.load(f)
+except Exception:
+    sys.exit(0)
+env = main.get('EnvironmentVariables')
+if isinstance(env, dict) and env:
+    merged = dict(env)
+    merged.update(new.get('EnvironmentVariables') or {})
+    new['EnvironmentVariables'] = merged
+    with open(sys.argv[2], 'wb') as f:
+        plistlib.dump(new, f)
+PY
+plutil -lint "$CATCHUP_TMP" >/dev/null
+
+CATCHUP_SAME=0
+if [[ -f "$CATCHUP_DST" ]]; then
+  set +e
+  "$PYTHON_BIN" - "$CATCHUP_DST" "$CATCHUP_TMP" <<'PY'
+import plistlib, sys
+try:
+    old = plistlib.load(open(sys.argv[1], 'rb'))
+    new = plistlib.load(open(sys.argv[2], 'rb'))
+except Exception:
+    sys.exit(1)
+keys = ('Label', 'ProgramArguments', 'RunAtLoad', 'EnvironmentVariables',
+        'StandardOutPath', 'StandardErrorPath', 'ProcessType')
+sys.exit(0 if all(old.get(k) == new.get(k) for k in keys) else 1)
+PY
+  CATCHUP_CMP_RC=$?
+  set -e
+  if [[ "$CATCHUP_CMP_RC" -eq 0 ]]; then CATCHUP_SAME=1; fi
+fi
+
+mv -f "$CATCHUP_TMP" "$CATCHUP_DST"
+chmod 644 "$CATCHUP_DST"
+
 if [[ "$RUN_ONCE" -eq 1 ]]; then
   echo "✓ [3/3] 立即试跑一次（会发送网络请求）"
   echo "---------------- 试跑输出 ----------------"
@@ -202,6 +263,38 @@ else
   echo "○ [3/3] 已跳过试跑（--no-run）"
 fi
 
+# 注册开机补签服务。RunAtLoad 在加载瞬间就会跑一次 catchup.py：
+# 默认安装时上面已试跑并写好当天日志，它会直接跳过；--no-run 时则刻意不注册，
+# 避免「说好不试跑、结果加载瞬间反而发了一轮请求」。
+if [[ "$RUN_ONCE" -eq 0 ]]; then
+  echo "  · --no-run：开机补签 plist 已写入，未注册（避免 RunAtLoad 立即试跑）"
+  echo "    重新登录 macOS 会自动加载；或手动：launchctl bootstrap gui/$UID_NUM $CATCHUP_DST"
+else
+  CATCHUP_LOADED=0
+  if launchctl print "gui/$UID_NUM/$CATCHUP_LABEL" >/dev/null 2>&1; then
+    CATCHUP_LOADED=1
+  fi
+  if [[ "$CATCHUP_LOADED" -eq 1 && "$CATCHUP_SAME" -eq 1 ]]; then
+    CATCHUP_OK=1
+    echo "  · 开机补签服务已注册且配置一致，保留现有注册"
+  else
+    if [[ "$CATCHUP_LOADED" -eq 1 ]]; then
+      launchctl bootout "gui/$UID_NUM/$CATCHUP_LABEL" >/dev/null 2>&1 || true
+    fi
+    if launchctl bootstrap "gui/$UID_NUM" "$CATCHUP_DST" 2>"$TARGET_DIR/bootstrap.catchup.err"; then
+      CATCHUP_OK=1
+      rm -f "$TARGET_DIR/bootstrap.catchup.err"
+      echo "  · 已注册开机补签服务（${CATCHUP_LABEL}）"
+    else
+      printf '  ⚠ 开机补签服务注册失败（不影响日历服务）：\n' >&2
+      if [[ -s "$TARGET_DIR/bootstrap.catchup.err" ]]; then
+        sed 's/^/      /' "$TARGET_DIR/bootstrap.catchup.err" >&2
+      fi
+      echo "    重新登录 macOS 通常会自动加载，或手动：launchctl bootstrap gui/$UID_NUM $CATCHUP_DST" >&2
+    fi
+  fi
+fi
+
 mark() { if [[ "$1" -eq 1 ]]; then printf 'OK'; else printf 'FAILED'; fi; }
 echo ""
 echo "=============== 安装结果（三态）==============="
@@ -211,6 +304,11 @@ if [[ "$RUN_ONCE" -eq 1 ]]; then
   printf '  [%-6s] 3/3 试跑验证\n' "$(mark "$RUN_OK")"
 else
   printf '  [%-6s] 3/3 试跑验证（--no-run 跳过）\n' "SKIP"
+fi
+if [[ "$RUN_ONCE" -eq 1 ]]; then
+  printf '  [%-6s] 开机补签   %s\n' "$(mark "$CATCHUP_OK")" "$CATCHUP_LABEL"
+else
+  printf '  [%-6s] 开机补签   配置已写入，未注册\n' "SKIP"
 fi
 echo "=============================================="
 
@@ -252,5 +350,7 @@ echo "    豆包: python3 ~/.auto-checkin/doubao_checkin.py --dry-run"
 echo "  MiniMax 探测续期端点(CN 区预期 401): python3 ~/.auto-checkin/minimax_checkin.py --renew"
 echo "    （token 已过期数天时，请先在客户端重新登录一次再跑）"
 echo "  临时停用豆包: DOUBAO_DISABLE=1 ~/.auto-checkin/checkin"
+echo "  开机补签预览: python3 ~/.auto-checkin/catchup.py --dry-run"
+echo "  开机补签日志: tail -f ~/.auto-checkin/launchd.catchup.log"
 echo "  卸载：bash $REPO_DIR/uninstall.sh"
 exit 0

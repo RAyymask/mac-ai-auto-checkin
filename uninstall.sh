@@ -5,8 +5,10 @@
 set -euo pipefail
 
 LABEL="com.user.ai-daily-checkin"
+CATCHUP_LABEL="com.user.ai-daily-checkin.catchup"
 TARGET_DIR="$HOME/.auto-checkin"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
+CATCHUP_DST="$HOME/Library/LaunchAgents/$CATCHUP_LABEL.plist"
 UID_NUM="$(id -u)"
 
 usage() {
@@ -33,27 +35,32 @@ echo "=========================================================="
 echo "🗑️  卸载 mac-ai-auto-checkin"
 echo "=========================================================="
 
-if launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1; then
-  echo "✓ 正在注销 launchd 定时服务..."
-  launchctl bootout "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || true
-else
-  echo "ℹ 定时服务当前未注册，跳过注销"
-fi
-
-if [[ -f "$PLIST_DST" ]]; then
-  rm -f "$PLIST_DST"
-  echo "✓ 已移除 $PLIST_DST"
-else
-  echo "ℹ plist 不存在，跳过"
-fi
+LABELS=("$LABEL" "$CATCHUP_LABEL")
+PLISTS=("$PLIST_DST" "$CATCHUP_DST")
+for i in 0 1; do
+  agent="${LABELS[$i]}"
+  plist="${PLISTS[$i]}"
+  if launchctl print "gui/$UID_NUM/$agent" >/dev/null 2>&1; then
+    echo "✓ 正在注销 $agent ..."
+    launchctl bootout "gui/$UID_NUM/$agent" >/dev/null 2>&1 || true
+  else
+    echo "ℹ $agent 当前未注册，跳过注销"
+  fi
+  if [[ -f "$plist" ]]; then
+    rm -f "$plist"
+    echo "✓ 已移除 $plist"
+  else
+    echo "ℹ $plist 不存在，跳过"
+  fi
+done
 
 if [[ "$PURGE" -eq 1 ]]; then
   if [[ -d "$TARGET_DIR" ]]; then
     rm -rf "$TARGET_DIR"
-    echo "✓ 已删除 $TARGET_DIR（脚本、日志与凭据缓存）"
+    echo "✓ 已删除 ${TARGET_DIR}（脚本、日志与凭据缓存）"
   fi
 else
-  echo "ℹ 保留 $TARGET_DIR（脚本与历史日志）"
+  echo "ℹ 保留 ${TARGET_DIR}（脚本与历史日志）"
   echo "  如需彻底清理，改用：bash uninstall.sh --purge"
 fi
 
