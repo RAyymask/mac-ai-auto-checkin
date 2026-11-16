@@ -39,16 +39,21 @@
   renewal；MINIMAX_RENEW=1/0 可强制覆盖，--renew 用于显式探测。
   续期成功得到的新 token 只写 .minimax_token.json（0600），绝不回写客户端。
 
-自动保持登录态（2026-11-13 新增）
-  CN 区签到前读 auth.json 的 expiresAtMs：剩余不足 3 小时或已过期时，
+自动保持登录态（2026-11-13 新增，2026-11-16 调整阈值与收尾）
+  CN 区签到前读 auth.json 的 expiresAtMs：剩余不足 1 小时或已过期时，
   自行执行 /usr/bin/open -a "MiniMax Code" 启动客户端，轮询最多 20 秒等它
-  刷新 auth.json，再重新读凭据签到。每天 10:05 那轮自动启动一次即可覆盖
-  当天 10:05 / 15:05 / 20:05 三轮，不会再出现下午 401。
-  * 只启动、不 quit / 重启正在运行的客户端，绝不改写客户端登录态。
-  * --dry-run 与 --renew 保持零副作用，不启动客户端。
+  刷新 auth.json，再重新读凭据签到。刷新出的 token 约 12 小时有效，早上
+  10:05 那一轮启动一次即可覆盖当天 10:05 / 15:05 / 20:05 三轮。
+  阈值原为 180 分钟：实测会导致每晚 20:05（token 还剩 2 小时以上）白启动
+  一次——客户端不会改写未过期的 auth.json，于是白等 20 秒还弹出一个窗口。
+  改为 60 分钟后只在真正临近过期时启动；关机漏跑时下午/晚上仍会启动，
+  401 保护不丢。
+  * 签到完成后自动退出「本轮由脚本启动」的客户端；用户原本就在运行的、
+    或运行状态探测失败（状态未知）时一律不退出，绝不改写客户端登录态。
+  * --dry-run 与 --renew 保持零副作用，不启动也不退出客户端。
   * env 注入凭据 / 国际区 renewal 缓存为首选时不启动（不需要 GUI）。
   * MINIMAX_NO_LAUNCH=1 完全停用；MINIMAX_LAUNCH_MARGIN_MIN 调阈值
-    （默认 180 分钟，仅用于排查）。
+    （默认 60 分钟，仅用于排查）。
   * 客户端本就已运行且未刷新时，20 秒后记日志并沿用旧 token 继续签到，
     不会为了刷新而杀掉用户正在使用的客户端。
 
@@ -103,13 +108,15 @@ CLIENT_CONFIG = (HOME / "Library" / "Application Support" / "MiniMax" /
 APP_PLIST = Path("/Applications/MiniMax Code.app/Contents/Info.plist")
 CLIENT_APP_NAME = "MiniMax Code"
 # 客户端启动时自行刷新 auth.json（约 12 小时有效期）；剩余不足该阈值就
-# 在签到前主动启动一次，保证当天 10:05/15:05/20:05 三轮都拿到有效 token。
-# 用 /usr/bin/open 绝对路径，避免 launchd 的精简 PATH 找不到命令。
-LAUNCH_MARGIN_MIN_DEFAULT = 180
+# 在签到前主动启动一次。60 分钟足够覆盖「早上刷新一次撑过当天三轮」，又不会
+# 在 token 仍有两个多小时时每晚白启动（2026-11-16 实测修正，原为 180）。
+LAUNCH_MARGIN_MIN_DEFAULT = 60
 LAUNCH_WAIT_SEC = 20       # 实测启动后约 2 秒落盘，20 秒足够
 LAUNCH_POLL_SEC = 2
-# 本轮是否真的启动并刷新了客户端；用于把结果带进 report / JSON 便于诊断
-LAUNCH_CONTEXT = {"refreshed": False, "note": ""}
+# 本轮是否启动 / 刷新了客户端：既用于把结果带进 report / JSON 便于诊断，
+# 也用于收尾时只退出「由我们启动」的那一个客户端。
+LAUNCH_CONTEXT = {"refreshed": False, "note": "",
+                  "launched_by_us": False, "quit_done": False}
 # 续期 token 只落在本项目目录，绝不回写客户端 auth.json
 TOKEN_CACHE = BASE_DIR / ".minimax_token.json"
 CACHE_SOFT_TTL = 7 * 24 * 3600  # renewal 响应不含过期时间，7 天未续上就回落客户端文件
@@ -125,10 +132,16 @@ def log(msg):
 
 def finish(result, report, **extra):
     if LAUNCH_CONTEXT["refreshed"]:
-        # 让「本轮自动启动了客户端」出现在 checkin.log 的日报里，便于事后核对
+        # 成功刷新：日报里写明启动了客户端，便于事后核对
         report = "%s（%s）" % (report, LAUNCH_CONTEXT["note"])
+    elif LAUNCH_CONTEXT["launched_by_us"]:
+        # 启动了但客户端没改写 auth.json（token 仍有效）：也要留痕，
+        # 否则用户只会看到窗口莫名弹出、日志里却查不到任何原因。
+        report = "%s（本轮自动启动过 MiniMax Code：%s）" % (
+            report, LAUNCH_CONTEXT["note"])
     obj = {"app": APP, "result": result, "report": report,
-           "client_launched": LAUNCH_CONTEXT["refreshed"]}
+           "client_launched": LAUNCH_CONTEXT["launched_by_us"],
+           "client_refreshed": LAUNCH_CONTEXT["refreshed"]}
     obj.update(extra)
     if proto is not None:
         proto.emit(obj)
@@ -296,11 +309,49 @@ def _launch_disabled():
         "1", "true", "yes", "on")
 
 
+def _client_running():
+    """探测客户端是否已在运行；返回 True / False / None（状态未知）。
+
+    未知时按「用户可能正在使用」处理，收尾绝不退出客户端。
+    """
+    try:
+        proc = subprocess.run(["/usr/bin/pgrep", "-x", CLIENT_APP_NAME],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=5)
+        if proc.returncode == 0:
+            return True
+        if proc.returncode == 1:
+            return False
+    except Exception:
+        pass
+    return None
+
+
+def quit_client_if_we_launched():
+    """签到收尾：只温和退出本轮由脚本启动的 MiniMax Code。
+
+    SIGTERM（pkill -x，不带 -9）给客户端留出落盘时间；绝不碰用户原本就在
+    运行的窗口，也不碰状态未知的窗口。任何异常都吞掉，不影响签到结果。
+    """
+    if not LAUNCH_CONTEXT["launched_by_us"] or LAUNCH_CONTEXT["quit_done"]:
+        return
+    LAUNCH_CONTEXT["quit_done"] = True
+    try:
+        proc = subprocess.run(["/usr/bin/pkill", "-x", CLIENT_APP_NAME],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=8)
+        log("已退出本轮自行启动的 MiniMax Code" if proc.returncode == 0
+            else "本轮自行启动的客户端已不在运行，无需退出")
+    except Exception as exc:
+        log("退出自行启动的客户端失败（不影响签到）：%s" % type(exc).__name__)
+
+
 def ensure_client_fresh(region):
     """签到前保证 CN 客户端 token 新鲜：必要时自行启动客户端刷新 auth.json。
 
-    返回 (是否观察到刷新, 说明)。绝不 quit / 重启正在运行的客户端，也绝不
+    返回 (是否观察到刷新, 说明)。绝不退出 / 重启用户正在运行的客户端，也绝不
     改写客户端登录态文件；启动失败只记日志，签到照常进行，由服务端判定。
+    本轮确由脚本启动的客户端会在 main() 的 finally 里收尾退出。
     """
     if _launch_disabled():
         return False, "MINIMAX_NO_LAUNCH=1，跳过自动启动客户端"
@@ -311,6 +362,9 @@ def ensure_client_fresh(region):
     if remaining >= _launch_margin_ms():
         return False, "token 剩余约 %d 分钟，无需启动客户端" % (remaining // 60000)
 
+    # 先记下启动前的状态：只有「原本明确没在运行」才算由我们启动，
+    # 收尾才允许退出。用户已开着 / 状态未知时一律不动。
+    was_running = _client_running()
     try:
         proc = subprocess.run(["/usr/bin/open", "-a", CLIENT_APP_NAME],
                               stdout=subprocess.DEVNULL,
@@ -321,6 +375,7 @@ def ensure_client_fresh(region):
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:120]
         return False, "启动客户端失败：open 返回 %d%s" % (
             proc.returncode, "（%s）" % err if err else "")
+    LAUNCH_CONTEXT["launched_by_us"] = (was_running is False)
 
     deadline = time.time() + LAUNCH_WAIT_SEC
     while time.time() < deadline:
@@ -669,6 +724,9 @@ def main():
         return run(dry_run=args.dry_run, renew_only=args.renew, no_renew=args.no_renew)
     except Exception as exc:
         return finish("ERROR", "未预期异常：%s: %s" % (type(exc).__name__, exc))
+    finally:
+        # 无论签到成功、失败还是异常，都收尾退出本轮由我们启动的客户端。
+        quit_client_if_we_launched()
 
 
 if __name__ == "__main__":
