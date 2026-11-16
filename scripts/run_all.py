@@ -165,6 +165,37 @@ def checkin_minimax():
 
 
 DOUBAO_GUARD = BASE_DIR / ".doubao_done"
+DOUBAO_GUI_PENDING = BASE_DIR / ".doubao_gui_pending"
+
+
+def _mark_doubao_gui_pending(reason):
+    """裸请求失败后登记 GUI 兜底待办（0600），交给有 GUI 通道的会话处理。
+
+    launchd 进程没有辅助功能权限（本机实测 AXIsProcessTrusted=False），脚本
+    自己点不了客户端；这里只写待办，绝不重试、绝不再发一次裸写请求。当天
+    守卫已由 _mark_doubao_done 写好，后续两轮排程会直接跳过豆包。
+    """
+    try:
+        payload = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "reason": str(reason)[:500],
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        fd = os.open(str(DOUBAO_GUI_PENDING),
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False))
+        log("  · 豆包脚本失败，已登记 GUI 兜底待办（当天不再发任何裸请求）")
+    except Exception as exc:
+        log("  · 豆包 GUI 兜底待办登记失败：%s（当天仍不再重试）" % type(exc).__name__)
+
+
+def _clear_doubao_gui_pending():
+    """脚本自己签到成功时撤销待办，避免 DOUBAO_FORCE 重跑后残留误报。"""
+    try:
+        DOUBAO_GUI_PENDING.unlink()
+    except Exception:
+        pass
 
 
 def _doubao_done_today():
@@ -176,6 +207,8 @@ def _doubao_done_today():
     会被一天打三次，正好踩中上游实测的「会话被置为受限」路径。
 
     DOUBAO_FORCE=1 可强制重跑；DOUBAO_DISABLE=1 可完全停用该平台。
+    脚本失败时不会重试，而是登记 .doubao_gui_pending，交给有 GUI 通道的
+    会话用客户端签到（见 doubao_gui_pending.py）。
     """
     if os.environ.get("DOUBAO_FORCE") == "1":
         return False
@@ -219,7 +252,11 @@ def checkin_doubao():
     # 补跑三次，累积裸请求反而更容易触发会话降权。
     _mark_doubao_done()
     if r["status"] not in (proto.STATUS_OK, proto.STATUS_ALREADY):
-        log("  · 豆包本轮未成功，当天不再重试（避免累积裸请求）")
+        # 唯一一次裸请求已经发出（或只读状态查询就失败了）：不重试、不补发，
+        # 改为登记 GUI 兜底待办，由 doubao_gui_pending.py --done 销账。
+        _mark_doubao_gui_pending(r["msg"])
+    else:
+        _clear_doubao_gui_pending()
     _report("豆包", r)
     return r
 

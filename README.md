@@ -41,7 +41,7 @@
 * 🪶 **零 pip 依赖**：纯 Python 标准库，无需 `pip install`；豆包的 Cookie 解密调用 macOS 自带的 `/usr/bin/openssl`，不装 Playwright、不装浏览器。
 * 🔒 **凭据只在本地使用**：读取本机已登录 Session，不上传任何凭据，不设内置密钥；落盘的缓存文件以 `0600` 保存。
 * ⏰ **双 LaunchAgent 排程**：日历服务每天 10:05 / 15:05 / 20:05 静默执行；独立的「开机补签」服务在每次登录后检查当天是否已签到，缺则补跑 —— **关机期间错过的轮次不再漏签**（2026-11-14 实测修复）。
-* 🛡️ **风控感知**：每个平台都先查状态再决定是否领取；豆包额外限制「每天最多一轮、写请求恰好一次」，详见下方专章。
+* 🛡️ **风控感知**：每个平台都先查状态再决定是否领取；豆包额外限制「每天最多一轮、写请求恰好一次」，失败自动登记 GUI 兜底待办，详见下方专章。
 
 ---
 
@@ -53,7 +53,7 @@
 | **Trae CN**<br>(字节跳动) | `/Applications/Trae CN.app` | • 每日签到（+100 积分/额度）<br>• 实时可用额度与消耗回查<br>• 设备指纹自动对齐（抗 9074 限流保护机制） | 00:00 |
 | **Qoder CN** | `/Applications/Qoder CN.app`（兼容 `Qoder.app`） | • 每日通用 100 Credits 自动 Claim<br>• 本地钥匙串凭证解密与 Campaign 状态回查 | 10:00 |
 | **MiniMax Code**<br>(MiniMax) | `/Applications/MiniMax Code.app`<br>凭据：`~/.minimax/auth/` | • 7 日签到面板状态回查 + 自动领取（实测 +400 积分/日）<br>• 读取客户端 `accessToken`（OAuth2 opaque token）；**CN 区默认不发必然 401 的 renewal**<br>• 签到前自动判断 token 是否临近过期，必要时**自行启动客户端**刷新登录态（无需人工打开）<br>• 复刻官方 TUI 的 `status` / `claim` 签名协议<br>• 连签天数与当日积分可读诊断 | 以服务端 7 日面板为准 |
-| **豆包**<br>(字节跳动) | `/Applications/Doubao.app`<br>凭据：`.../Doubao/Default/Cookies` | • 活动详情只读查询 + 签到领额度（实测 +200 额度）<br>• **当天已处理守卫**，一天三次排程也只打一轮<br>• 活动码可配置，换季无需改代码 | 以活动页为准 |
+| **豆包**<br>(字节跳动) | `/Applications/Doubao.app`<br>凭据：`.../Doubao/Default/Cookies` | • 活动详情只读查询 + 签到领额度（实测 +200 额度）<br>• **当天已处理守卫**，一天三次排程也只打一轮<br>• 脚本失败自动登记 GUI 兜底，签完退出客户端<br>• 活动码可配置，换季无需改代码 | 以活动页为准 |
 
 > 表中积分/额度为 2026-11-08 实测值，实际发放以各平台官方活动规则为准，可能随时调整。新增两个平台的凭据、接口与风控说明见「MiniMax Code 与豆包」章节。
 
@@ -148,7 +148,24 @@ bash install.sh --help
 2. 领取请求每次运行**恰好一次，绝不重试、不补发、事后不复查**（接口本身幂等）。
 3. `run_all.py` 有「当天已执行就跳过」守卫（标记 `~/.auto-checkin/.doubao_done`，0600）：**无论成功、幂等、鉴权失败还是 `710010702`，只要脚本跑过一次就标记当天**，LaunchAgent 一天三次触发也只打一轮。失败时更要熔断，否则正是上游警告的「连续裸请求」路径。需要重跑设 `DOUBAO_FORCE=1`；想彻底停掉该平台设 `DOUBAO_DISABLE=1`（不发送任何请求，也不影响其他四个平台）。
 
-返回 `710010702 系统错误` 时请**先设 `DOUBAO_DISABLE=1` 停掉自动请求，再改用豆包客户端手工签到，不要反复重跑**（会话已被置为受限时，客户端内手工签到也可能失败，见故障排查）。排查一律先用 `--dry-run`：
+返回 `710010702 系统错误` 时**不要反复重跑**；先停用自动请求、退出重登客户端，再走 GUI 兜底（会话已被置为受限时客户端内也可能失败，见故障排查）。排查一律先用 `--dry-run`：
+
+### 🔁 脚本失败后的 GUI 兜底（2026-11-16 新增）
+
+`run_all.py` 的豆包链路固定为**每天只跑一次裸 HTTP 脚本**；只要该次结果不是 `OK` / `ALREADY`（含 `NO_AUTH`、`710010702`、超时、异常），就：
+
+1. 写好当天守卫 `.doubao_done`（后续两轮排程直接跳过豆包，绝不再发裸请求）；
+2. 写一条 0600 待办 `.doubao_gui_pending`（`{date, reason, ts}`）；
+3. 由带 GUI 通道的 WorkBuddy 定时任务接管：打开豆包 → **只点一次**「立即签到」→ 用 `--dry-run` 只读复验 → 退出客户端 → `doubao_gui_pending.py --done` 销账。
+
+**为什么不在脚本里直接点客户端**：本机实测 launchd 启动的 `python3` 的 `AXIsProcessTrusted()` 为 `False`，没有辅助功能权限，无法投递真实鼠标事件；终端 / WorkBuddy 会话里的同一份 `python3` 才是 `True`。所以脚本只负责登记与销账，GUI 动作必须由有权限的会话执行。这也意味着**兜底依赖 WorkBuddy 在线**；未在线时待办会一直保留，`doctor` 会标红提示，不会静默漏签。
+
+GUI 兜底全程只点击一次、不重试、不用 `DOUBAO_FORCE`、不调用写模式接口。若客户端原本就在运行（用户正在使用），兜底不会强行退出；只有本次为兜底而启动的客户端才会在签到完成后退出。
+
+```bash
+python3 ~/.auto-checkin/doubao_gui_pending.py --status   # {"pending": false} 或含失败原因
+python3 ~/.auto-checkin/doubao_gui_pending.py --done     # GUI 签到成功后销账
+```
 
 ```bash
 python3 ~/.auto-checkin/minimax_checkin.py --dry-run   # 只查状态，不领取
@@ -227,6 +244,8 @@ CN 区桌面端是标准 OAuth2：`~/.minimax/auth/prod/cn/mcode-public/auth.jso
 | 只查豆包活动详情，不领取 | `python3 ~/.auto-checkin/doubao_checkin.py --dry-run` |
 | 强制重跑豆包（绕过当天守卫） | `DOUBAO_FORCE=1 ~/.auto-checkin/checkin` |
 | 临时停用豆包（会话受限时用） | `DOUBAO_DISABLE=1 ~/.auto-checkin/checkin` |
+| 查看豆包 GUI 兜底待办 | `python3 ~/.auto-checkin/doubao_gui_pending.py --status` |
+| GUI 兜底签到成功后销账 | `python3 ~/.auto-checkin/doubao_gui_pending.py --done` |
 | **离线自检（推荐排障第一步）** | `~/.auto-checkin/checkin doctor` |
 | 自检结果转 JSON（供脚本消费） | `~/.auto-checkin/checkin doctor --json` |
 | 签到结果转 JSON（不弹通知） | `~/.auto-checkin/checkin --json` |
@@ -241,7 +260,7 @@ CN 区桌面端是标准 OAuth2：`~/.minimax/auth/prod/cn/mcode-public/auth.jso
 | 卸载（保留脚本与日志） | `bash uninstall.sh` |
 | 彻底卸载（删除目录，不可恢复） | `bash uninstall.sh --purge` |
 
-`doctor` 逐项检查 Python 版本、五个客户端是否安装、10 个脚本的完整性与语法、目录与凭据缓存权限（含 MiniMax 续期缓存，存在时才检查）、`openssl` 是否可用、豆包 Cookie 库与 MiniMax `auth.json` 是否就位、**两个 LaunchAgent** 的配置与注册状态（含补签服务是否继承 `EnvironmentVariables`）、日志体积，并给出修复命令。它**不联网**，也**不会读取或打印任何凭据内容**。
+`doctor` 逐项检查 Python 版本、五个客户端是否安装、11 个脚本的完整性与语法、目录与凭据缓存权限（含 MiniMax 续期缓存，存在时才检查）、`openssl` 是否可用、豆包 Cookie 库与 MiniMax `auth.json` 是否就位、**两个 LaunchAgent** 的配置与注册状态（含补签服务是否继承 `EnvironmentVariables`）、**豆包 GUI 兜底待办是否未处理**、日志体积，并给出修复命令。它**不联网**，也**不会读取或打印任何凭据内容**。
 
 ---
 

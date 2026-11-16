@@ -15,6 +15,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 LABEL = "com.user.ai-daily-checkin"
@@ -34,7 +35,7 @@ CLIENTS = (
 )
 SCRIPTS = ("checkin_protocol.py", "run_all.py", "signin.py", "trae_get_token.py",
            "trae_checkin.py", "qoder_signin.py", "minimax_checkin.py",
-           "doubao_checkin.py", "catchup.py", "doctor.py")
+           "doubao_checkin.py", "doubao_gui_pending.py", "catchup.py", "doctor.py")
 
 
 def rec(name, ok, detail, fix=""):
@@ -179,6 +180,28 @@ def collect():
         except Exception as exc:
             items.append(rec("开机补签服务", False, "plist 解析失败：%s" % exc,
                              "重新运行 install.sh"))
+
+    # 豆包裸请求失败后会留下当日 GUI 兜底待办；未处理时明确提示，避免漏签
+    # 被「当天守卫已写」掩盖。过期待办不视为异常。
+    pending_file = BASE / ".doubao_gui_pending"
+    if not pending_file.is_file():
+        items.append(rec("豆包 GUI 兜底", True, "无未处理待办"))
+    else:
+        try:
+            obj = json.loads(pending_file.read_text(encoding="utf-8"))
+            p_date = str((obj or {}).get("date") or "")
+            if p_date == datetime.now().strftime("%Y-%m-%d"):
+                items.append(rec("豆包 GUI 兜底", False,
+                                 "待办未处理：%s %s" % (obj.get("ts") or "",
+                                                    str(obj.get("reason") or "")[:80]),
+                                 "用客户端 GUI 签到一次后执行：python3 %s/doubao_gui_pending.py --done"
+                                 % BASE))
+            else:
+                items.append(rec("豆包 GUI 兜底", True,
+                                 "仅有过期待办（%s），--status 会自动清理" % p_date))
+        except Exception as exc:
+            items.append(rec("豆包 GUI 兜底", False, "待办文件解析失败：%s" % exc,
+                             "删除 %s 后重跑自检" % pending_file))
 
     if LOG.exists():
         lines = [x for x in LOG.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
