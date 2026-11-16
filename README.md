@@ -155,16 +155,17 @@ bash install.sh --help
 `run_all.py` 的豆包链路固定为**每天只跑一次裸 HTTP 脚本**；只要该次结果不是 `OK` / `ALREADY`（含 `NO_AUTH`、`710010702`、超时、异常），就：
 
 1. 写好当天守卫 `.doubao_done`（后续两轮排程直接跳过豆包，绝不再发裸请求）；
-2. 写一条 0600 待办 `.doubao_gui_pending`（`{date, reason, ts}`）；
-3. 由带 GUI 通道的 WorkBuddy 定时任务接管：打开豆包 → **只点一次**「立即签到」→ 用 `--dry-run` 只读复验 → 退出客户端 → `doubao_gui_pending.py --done` 销账。
+2. 写一条 0600 待办 `.doubao_gui_pending`（`{date, reason, ts, gui_attempted}`）；
+3. 由带 GUI 通道的 WorkBuddy 定时任务接管：每天 **10:15 / 15:15 / 20:15** 三个检查点，任一在线即可接手；点击前先 `--attempted` 落盘 → 打开豆包 → **只点一次**「立即签到」→ 用 `--dry-run` 只读复验 → 退出客户端 → `doubao_gui_pending.py --done` 销账。
 
-**为什么不在脚本里直接点客户端**：本机实测 launchd 启动的 `python3` 的 `AXIsProcessTrusted()` 为 `False`，没有辅助功能权限，无法投递真实鼠标事件；终端 / WorkBuddy 会话里的同一份 `python3` 才是 `True`。所以脚本只负责登记与销账，GUI 动作必须由有权限的会话执行。这也意味着**兜底依赖 WorkBuddy 在线**；未在线时待办会一直保留，`doctor` 会标红提示，不会静默漏签。
+**为什么不在脚本里直接点客户端**：本机实测 launchd 启动的 `python3` 的 `AXIsProcessTrusted()` 为 `False`，没有辅助功能权限，无法投递真实鼠标事件；终端 / WorkBuddy 会话里的同一份 `python3` 才是 `True`。所以脚本只负责登记与销账，GUI 动作必须由有权限的会话执行。这也意味着**兜底依赖 WorkBuddy 在线**：三个检查点任意一个在线即可接手；都不在线时待办会保留、`doctor` 标红提示，但跨天后视为过期（不会补签昨天），不会静默漏签。
 
-GUI 兜底全程只点击一次、不重试、不用 `DOUBAO_FORCE`、不调用写模式接口。若客户端原本就在运行（用户正在使用），兜底不会强行退出；只有本次为兜底而启动的客户端才会在签到完成后退出。
+**一天最多一次真实点击**：待办文件带 `gui_attempted` 标记，投递鼠标事件之前先落盘；后续检查点看到该标记为 `true` 时只做只读复验与销账，绝不再次点击。若窗口被遮挡或按钮不可见，则不标记、直接放弃，留给下一个检查点。全程不重试、不用 `DOUBAO_FORCE`、不调用写模式接口。若客户端原本就在运行（用户正在使用），兜底不会强行退出；只有本次为兜底而启动的客户端才会退出。
 
 ```bash
-python3 ~/.auto-checkin/doubao_gui_pending.py --status   # {"pending": false} 或含失败原因
-python3 ~/.auto-checkin/doubao_gui_pending.py --done     # GUI 签到成功后销账
+python3 ~/.auto-checkin/doubao_gui_pending.py --status     # {"pending": false, "gui_attempted": false} 或含失败原因
+python3 ~/.auto-checkin/doubao_gui_pending.py --attempted  # 投递点击前标记（自动化内部使用）
+python3 ~/.auto-checkin/doubao_gui_pending.py --done       # GUI 签到成功后销账
 ```
 
 ```bash
@@ -245,6 +246,7 @@ CN 区桌面端是标准 OAuth2：`~/.minimax/auth/prod/cn/mcode-public/auth.jso
 | 强制重跑豆包（绕过当天守卫） | `DOUBAO_FORCE=1 ~/.auto-checkin/checkin` |
 | 临时停用豆包（会话受限时用） | `DOUBAO_DISABLE=1 ~/.auto-checkin/checkin` |
 | 查看豆包 GUI 兜底待办 | `python3 ~/.auto-checkin/doubao_gui_pending.py --status` |
+| 标记本日已投递 GUI 点击（自动化内部使用） | `python3 ~/.auto-checkin/doubao_gui_pending.py --attempted` |
 | GUI 兜底签到成功后销账 | `python3 ~/.auto-checkin/doubao_gui_pending.py --done` |
 | **离线自检（推荐排障第一步）** | `~/.auto-checkin/checkin doctor` |
 | 自检结果转 JSON（供脚本消费） | `~/.auto-checkin/checkin doctor --json` |

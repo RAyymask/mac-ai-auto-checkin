@@ -180,6 +180,7 @@ def _mark_doubao_gui_pending(reason):
             "date": datetime.now().strftime("%Y-%m-%d"),
             "reason": str(reason)[:500],
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "gui_attempted": False,
         }
         fd = os.open(str(DOUBAO_GUI_PENDING),
                      os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

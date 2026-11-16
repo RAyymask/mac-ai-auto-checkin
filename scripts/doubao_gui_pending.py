@@ -11,17 +11,27 @@
   本模块不联网、不发签到请求，只维护两个 0600 状态文件，保证
   「脚本一天一次 + GUI 兜底一天一次」且当天不再重试任何通道。
 
+  WorkBuddy 侧每天有三个检查点（10:15 / 15:15 / 20:15），任何一个在线
+  都能接手待办；但**真实鼠标点击一天最多一次**。点击前必须先
+  ``--attempted`` 落盘标记，后续检查点看到 ``gui_attempted=true`` 时
+  只允许做只读复验与销账，绝不再次点击。标记与待办同文件、同日过期，
+  跨天自动重置。
+
 状态文件（都在 ~/.auto-checkin/）
-  .doubao_gui_pending   JSON {date, reason, ts}，存在且 date 为今天时表示待办
+  .doubao_gui_pending   JSON {date, reason, ts, gui_attempted, attempted_ts}，
+                        存在且 date 为今天时表示待办
   .doubao_done          纯文本 YYYY-MM-DD，当天已处理守卫（run_all.py 也写）
 
 用法
-  python3 doubao_gui_pending.py --status    # 只读查询；顺手清理过期待办
-  python3 doubao_gui_pending.py --done      # 销账：写当天守卫并删除待办
+  python3 doubao_gui_pending.py --status      # 只读查询；顺手清理过期待办
+  python3 doubao_gui_pending.py --attempted   # 标记本日已投递一次 GUI 点击
+  python3 doubao_gui_pending.py --done        # 销账：写当天守卫并删除待办
   python3 doubao_gui_pending.py --mark "原因"  # 登记（一般供测试 / 手工用）
 
 约束
-  * --status 一律退出 0，``pending`` 字段才表示是否有当日待办。
+  * --status 一律退出 0，``pending`` 字段才表示是否有当日待办；
+    同时返回 ``gui_attempted`` 布尔值供自动化判断是否还允许点击。
+  * --attempted 只在存在当日待办时生效，不会凭空创建待办。
   * 过期待办（非今天）不视为有效，并在 --status 时删除，避免跨天误签。
   * 不使用 DOUBAO_FORCE，不调用 doubao_checkin.py 的写模式。
 """
@@ -77,7 +87,23 @@ def mark(reason):
         "date": today(),
         "reason": str(reason)[:500],
         "ts": datetime.now().strftime(TS_FMT),
+        "gui_attempted": False,
     }, ensure_ascii=False))
+
+
+def attempted():
+    """在投递真实鼠标点击**之前**落盘标记，保证同一天最多点一次。
+
+    只在存在当日待办时写入；返回是否标记成功。这样即使点击后进程中断，
+    下一个检查点也不会重复点击，只会做只读复验。
+    """
+    p = read_pending()
+    if not p:
+        return False
+    p["gui_attempted"] = True
+    p["attempted_ts"] = datetime.now().strftime(TS_FMT)
+    _write_private(PENDING, json.dumps(p, ensure_ascii=False))
+    return True
 
 
 def done():
@@ -97,7 +123,12 @@ def main():
         out = {"pending": p is not None}
         if p:
             out.update(p)
+        out["gui_attempted"] = bool(p.get("gui_attempted")) if p else False
         print(json.dumps(out, ensure_ascii=False))
+        return 0
+    if "--attempted" in args:
+        ok = attempted()
+        print(json.dumps({"attempted": ok, "date": today()}, ensure_ascii=False))
         return 0
     if "--done" in args:
         done()
